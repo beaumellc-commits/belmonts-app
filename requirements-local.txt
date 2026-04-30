@@ -1,0 +1,4 @@
+# Dépendances LOCALES uniquement (pour scrape_leads.py sur ton Mac).
+# Streamlit Cloud n'utilise PAS ce fichier — il lit requirements.txt.
+-r requirements.txt
+playwright==1.44.0

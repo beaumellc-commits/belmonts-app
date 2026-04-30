@@ -1,0 +1,23 @@
+# Secrets
+.streamlit/secrets.toml
+.env
+
+# Cache Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+scraper-env/
+
+# Cache du scraper (reprise après interruption)
+.cache/
+
+# Sorties Excel locales (générées par scrape_leads.py)
+*.xlsx
+*.csv
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,518 @@
+"""
+Belmonts CRM — App Streamlit de prospection.
+Pipeline : À contacter → Contacté → À recontacter → Client / Refus.
+"""
+from __future__ import annotations
+
+from datetime import date, datetime
+
+import pandas as pd
+import streamlit as st
+
+from db import (
+    STATUTS, fetch_lead, fetch_leads, get_counts, get_stats,
+    import_from_excel, update_lead,
+)
+
+# ─── CONFIG ───────────────────────────────────────────────────────────────────
+st.set_page_config(
+    page_title="Belmonts — CRM",
+    page_icon="🏗️",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+
+def get_users() -> dict[str, str]:
+    """Lit les credentials depuis st.secrets, fallback sur les valeurs par défaut."""
+    try:
+        if "auth" in st.secrets:
+            return dict(st.secrets["auth"])
+    except Exception:
+        pass
+    return {
+        "admin":       "belmonts1978",
+        "commercial1": "belmonts2024",
+        "commercial2": "belmonts2024",
+    }
+
+
+# ─── STYLE ────────────────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
+html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+
+[data-testid="stSidebar"] { background: #0d1f38 !important; border-right: none !important; }
+[data-testid="stSidebar"] * { color: rgba(255,255,255,0.75) !important; }
+[data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2 { color: #fff !important; }
+[data-testid="stSidebar"] .stButton > button {
+    background: transparent !important; color: rgba(255,255,255,0.85) !important;
+    border: 1px solid rgba(255,255,255,0.1) !important; text-align: left !important;
+    font-weight: 400 !important; padding: 0.5rem 0.8rem !important;
+    margin-bottom: 0.25rem !important;
+}
+[data-testid="stSidebar"] .stButton > button:hover {
+    background: rgba(204,32,32,0.15) !important;
+    border-color: #cc2020 !important;
+}
+
+.main .block-container { padding: 1.5rem 2.5rem; max-width: 100%; }
+
+[data-testid="metric-container"] {
+    background: #fff; border: 1px solid #e8e8e4; border-radius: 8px;
+    padding: 1rem 1.25rem; border-left: 3px solid #cc2020;
+}
+[data-testid="metric-container"] label { font-size: 11px !important; color: #999 !important; }
+[data-testid="metric-container"] [data-testid="stMetricValue"] {
+    font-size: 26px !important; font-weight: 500 !important; color: #0d1f38 !important;
+}
+
+.main .stButton > button {
+    background: #cc2020 !important; color: #fff !important; border: none !important;
+    border-radius: 6px !important; font-weight: 500 !important;
+    padding: 0.5rem 1.25rem !important;
+}
+.main .stButton > button:hover { background: #aa1818 !important; }
+
+.belmonts-header {
+    display: flex; align-items: baseline; gap: 12px;
+    margin-bottom: 1.25rem; border-bottom: 1px solid #e8e8e4;
+    padding-bottom: 0.75rem;
+}
+.belmonts-title { font-size: 22px; font-weight: 500; color: #0d1f38; }
+.belmonts-sub   { font-size: 13px; color: #999; }
+
+div[data-testid="stExpander"] {
+    border: 1px solid #e8e8e4 !important;
+    border-radius: 8px !important;
+    background: #fff !important;
+}
+
+.stat-pill {
+    display: inline-block; padding: 2px 10px; font-size: 11px;
+    border-radius: 12px; font-weight: 500;
+}
+</style>
+""", unsafe_allow_html=True)
+
+
+# ─── COMPOSANTS ───────────────────────────────────────────────────────────────
+def header(title: str, subtitle: str = "") -> None:
+    st.markdown(f"""
+    <div class="belmonts-header">
+        <div class="belmonts-title">{title}</div>
+        <div class="belmonts-sub">{subtitle}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def login() -> None:
+    st.markdown("""
+    <div style="text-align:center; margin-top: 60px; margin-bottom: 2rem;">
+        <div style="font-size:26px; font-weight:500; color:#0d1f38; letter-spacing:5px;">
+            BELMON<span style="color:#cc2020;">T</span>S
+        </div>
+        <div style="height:1px; background:linear-gradient(90deg,transparent,#cc2020,transparent);
+                    width:140px; margin:8px auto;"></div>
+        <div style="font-size:9px; color:#aaa; letter-spacing:3px;">DEPUIS 1978</div>
+        <div style="font-size:14px; color:#999; margin-top:1.5rem;">CRM Prospection — Île-de-France</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col1, col2, col3 = st.columns([1, 1.2, 1])
+    with col2:
+        with st.form("login_form"):
+            u = st.text_input("Identifiant")
+            p = st.text_input("Mot de passe", type="password")
+            if st.form_submit_button("Se connecter", use_container_width=True):
+                users = get_users()
+                if u in users and users[u] == p:
+                    st.session_state["user"] = u
+                    st.session_state["page"] = "a_contacter"
+                    st.rerun()
+                else:
+                    st.error("Identifiants invalides.")
+
+
+def sidebar() -> str:
+    with st.sidebar:
+        st.markdown("""
+        <div style="margin-bottom:1.5rem;">
+            <div style="font-size:18px; font-weight:500; color:#fff; letter-spacing:4px;">
+                BELMON<span style="color:#cc2020;">T</span>S
+            </div>
+            <div style="height:1px; background:linear-gradient(90deg,#cc2020,transparent); margin:6px 0 4px;"></div>
+            <div style="font-size:8px; color:rgba(255,255,255,0.4); letter-spacing:3px;">DEPUIS 1978</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        try:
+            counts = get_counts()
+        except Exception as e:
+            st.error("⚠️ Connexion Supabase échouée. Vérifie tes secrets.")
+            st.caption(f"{e}")
+            counts = {k: 0 for k in STATUTS}
+
+        st.markdown("**LEADS**")
+        nav = [
+            ("a_contacter",   f"🆕 À contacter ({counts.get('a_contacter', 0)})"),
+            ("contacte",      f"📞 Contactés ({counts.get('contacte', 0)})"),
+            ("a_recontacter", f"📅 À recontacter ({counts.get('a_recontacter', 0)})"),
+            ("client",        f"✅ Clients ({counts.get('client', 0)})"),
+            ("refus",         f"❌ Refus ({counts.get('refus', 0)})"),
+        ]
+        for key, label in nav:
+            if st.button(label, key=f"nav_{key}", use_container_width=True):
+                st.session_state["page"] = key
+                st.session_state.pop("selected_lead", None)
+                st.rerun()
+
+        st.markdown("---")
+        st.markdown("**OUTILS**")
+        if st.button("📊 Statistiques", key="nav_stats", use_container_width=True):
+            st.session_state["page"] = "stats"
+            st.rerun()
+        if st.session_state.get("user") == "admin":
+            if st.button("⚙️ Importer des leads", key="nav_import", use_container_width=True):
+                st.session_state["page"] = "import"
+                st.rerun()
+
+        st.markdown("---")
+        st.caption(f"Connecté : **{st.session_state.get('user', '')}**")
+        if st.button("Déconnexion", key="logout", use_container_width=True):
+            for k in list(st.session_state.keys()):
+                del st.session_state[k]
+            st.rerun()
+
+    return st.session_state.get("page", "a_contacter")
+
+
+# ─── PAGE: LISTE DE LEADS ─────────────────────────────────────────────────────
+PAGE_TITLES = {
+    "a_contacter":   ("Leads à contacter", "Prospects pas encore appelés"),
+    "contacte":      ("Contactés en cours", "Discussion engagée"),
+    "a_recontacter": ("À recontacter",       "Rappel programmé"),
+    "client":        ("Clients",             "Ils ont signé 🎉"),
+    "refus":         ("Refus",               "Pas intéressés"),
+}
+
+
+def page_leads(statut: str) -> None:
+    title, sub = PAGE_TITLES.get(statut, ("Leads", ""))
+    header(title, sub)
+
+    # Filtres
+    c1, c2, c3, c4 = st.columns([1.5, 1.5, 2.5, 1])
+    with c1:
+        depts = ["Tous", "75", "92", "93", "94", "78", "77", "91", "95"]
+        dept = st.selectbox("Département", depts, key=f"dept_{statut}")
+    with c2:
+        type_p = st.selectbox("Type", ["Tous", "Syndic", "Agence"], key=f"type_{statut}")
+    with c3:
+        search = st.text_input("🔍 Recherche par nom",
+                               placeholder="ex: Foncia",
+                               key=f"search_{statut}")
+    with c4:
+        st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+        if st.button("Actualiser", key=f"refresh_{statut}", use_container_width=True):
+            st.rerun()
+
+    df = fetch_leads(
+        statut=statut,
+        departement=dept if dept != "Tous" else None,
+        type_prospect=type_p if type_p != "Tous" else None,
+        search=search if search else None,
+    )
+
+    st.markdown(
+        f"<div style='font-size:13px; color:#666; margin: 0.75rem 0 1rem;'>"
+        f"<strong>{len(df)}</strong> lead(s) trouvé(s)</div>",
+        unsafe_allow_html=True,
+    )
+
+    if df.empty:
+        st.info("Aucun lead avec ces filtres.")
+        return
+
+    # Panneau de détail au-dessus si un lead est sélectionné
+    if st.session_state.get("selected_lead"):
+        render_lead_detail(st.session_state["selected_lead"])
+        st.markdown("---")
+
+    # Pagination simple (25 par page)
+    PAGE_SIZE = 25
+    page_key = f"page_num_{statut}"
+    if page_key not in st.session_state:
+        st.session_state[page_key] = 0
+    total_pages = max(1, (len(df) - 1) // PAGE_SIZE + 1)
+    st.session_state[page_key] = min(st.session_state[page_key], total_pages - 1)
+
+    pc1, pc2, pc3 = st.columns([1, 2, 1])
+    with pc1:
+        if st.button("← Précédent", key=f"prev_{statut}",
+                     disabled=st.session_state[page_key] == 0,
+                     use_container_width=True):
+            st.session_state[page_key] -= 1
+            st.rerun()
+    with pc2:
+        st.markdown(
+            f"<div style='text-align:center; padding-top:8px; color:#666; font-size:13px;'>"
+            f"Page <strong>{st.session_state[page_key] + 1}</strong> / {total_pages}</div>",
+            unsafe_allow_html=True,
+        )
+    with pc3:
+        if st.button("Suivant →", key=f"next_{statut}",
+                     disabled=st.session_state[page_key] >= total_pages - 1,
+                     use_container_width=True):
+            st.session_state[page_key] += 1
+            st.rerun()
+
+    start = st.session_state[page_key] * PAGE_SIZE
+    end = start + PAGE_SIZE
+    page_df = df.iloc[start:end]
+
+    # Affichage compact en lignes cliquables
+    for _, row in page_df.iterrows():
+        with st.container(border=True):
+            c1, c2, c3, c4, c5 = st.columns([3, 2, 2, 1.5, 1])
+            with c1:
+                st.markdown(f"**{row['nom']}**")
+                st.caption(f"{row['type']} — {row.get('ville') or '?'} ({row.get('departement') or '?'})")
+            with c2:
+                tel = row.get("telephone") or ""
+                tel_alt = row.get("telephone_alt") or ""
+                st.markdown(f"📞 {tel or '—'}")
+                if tel_alt:
+                    st.caption(f"📞 alt : {tel_alt}")
+            with c3:
+                email = row.get("email") or ""
+                if email:
+                    st.markdown(f"✉️ {email}")
+                else:
+                    st.caption("Pas d'email")
+            with c4:
+                statut_label = STATUTS.get(row.get("statut") or "a_contacter", "")
+                st.markdown(f"<span class='stat-pill' style='background:#f5f5f3; color:#0d1f38;'>{statut_label}</span>",
+                            unsafe_allow_html=True)
+            with c5:
+                if st.button("Ouvrir →", key=f"open_{row['id']}", use_container_width=True):
+                    st.session_state["selected_lead"] = int(row["id"])
+                    st.rerun()
+
+
+# ─── DÉTAIL D'UN LEAD ─────────────────────────────────────────────────────────
+def render_lead_detail(lead_id: int) -> None:
+    lead = fetch_lead(lead_id)
+    if not lead:
+        st.error("Lead introuvable.")
+        st.session_state.pop("selected_lead", None)
+        return
+
+    user = st.session_state.get("user", "")
+
+    with st.container(border=True):
+        # En-tête
+        c_h1, c_h2 = st.columns([5, 1])
+        with c_h1:
+            st.markdown(f"### {lead['nom']}")
+            st.caption(f"{lead['type']} — {lead.get('ville') or '?'} "
+                       f"({lead.get('departement') or '?'})")
+        with c_h2:
+            if st.button("✕ Fermer", key="close_detail"):
+                st.session_state.pop("selected_lead", None)
+                st.rerun()
+
+        # Coordonnées
+        st.markdown("**📞 Coordonnées**")
+        cc1, cc2 = st.columns(2)
+        with cc1:
+            st.markdown(f"**Téléphone principal** : `{lead.get('telephone') or '—'}`")
+            st.markdown(f"**Adresse** : {lead.get('adresse') or '—'}")
+        with cc2:
+            tel_alt = st.text_input("Téléphone alternatif",
+                                    value=lead.get("telephone_alt") or "",
+                                    placeholder="06 12 34 56 78",
+                                    key=f"telalt_{lead_id}")
+            email = st.text_input("Email",
+                                  value=lead.get("email") or "",
+                                  placeholder="contact@entreprise.fr",
+                                  key=f"email_{lead_id}")
+
+        # Suivi commercial
+        st.markdown("**🎯 Suivi commercial**")
+        sc1, sc2 = st.columns(2)
+        with sc1:
+            statut_keys = list(STATUTS.keys())
+            current = lead.get("statut") or "a_contacter"
+            idx = statut_keys.index(current) if current in statut_keys else 0
+            new_statut = st.selectbox("Statut",
+                                      statut_keys,
+                                      index=idx,
+                                      format_func=lambda k: STATUTS[k],
+                                      key=f"statut_{lead_id}")
+        with sc2:
+            current_recontact = lead.get("date_recontact")
+            recontact_value: date | None = None
+            if current_recontact:
+                try:
+                    recontact_value = (date.fromisoformat(current_recontact[:10])
+                                       if isinstance(current_recontact, str)
+                                       else current_recontact)
+                except Exception:
+                    recontact_value = None
+            date_recontact = st.date_input("Date à recontacter",
+                                           value=recontact_value,
+                                           key=f"recontact_{lead_id}")
+
+        notes = st.text_area("📝 Notes",
+                             value=lead.get("notes") or "",
+                             height=120,
+                             placeholder="ex: RDV jeudi 14h avec M. Durand. Demande devis ravalement.",
+                             key=f"notes_{lead_id}")
+
+        # Historique
+        last_contact = lead.get("date_dernier_contact")
+        last_user = lead.get("contacte_par")
+        if last_contact:
+            try:
+                ts = datetime.fromisoformat(str(last_contact).replace("Z", "+00:00"))
+                st.caption(f"📅 Dernier contact : **{ts:%d/%m/%Y %H:%M}** par **{last_user or '—'}**")
+            except Exception:
+                st.caption(f"📅 Dernier contact : {last_contact} par {last_user or '—'}")
+
+        # Actions
+        ac1, ac2, ac3, ac4 = st.columns(4)
+        with ac1:
+            if st.button("💾 Enregistrer", key=f"save_{lead_id}", use_container_width=True):
+                update_lead(lead_id, {
+                    "telephone_alt": tel_alt,
+                    "email": email,
+                    "statut": new_statut,
+                    "notes": notes,
+                    "date_recontact": date_recontact.isoformat() if date_recontact else None,
+                }, user)
+                st.success("✅ Enregistré")
+                st.rerun()
+        with ac2:
+            if st.button("📞 Marquer contacté", key=f"contact_{lead_id}", use_container_width=True):
+                update_lead(lead_id, {"statut": "contacte", "notes": notes,
+                                      "telephone_alt": tel_alt, "email": email}, user)
+                st.session_state.pop("selected_lead", None)
+                st.rerun()
+        with ac3:
+            if st.button("✅ Client", key=f"client_{lead_id}", use_container_width=True):
+                update_lead(lead_id, {"statut": "client", "notes": notes,
+                                      "telephone_alt": tel_alt, "email": email}, user)
+                st.session_state.pop("selected_lead", None)
+                st.rerun()
+        with ac4:
+            if st.button("❌ Refus", key=f"refus_{lead_id}", use_container_width=True):
+                update_lead(lead_id, {"statut": "refus", "notes": notes,
+                                      "telephone_alt": tel_alt, "email": email}, user)
+                st.session_state.pop("selected_lead", None)
+                st.rerun()
+
+
+# ─── PAGE: STATISTIQUES ───────────────────────────────────────────────────────
+def page_stats() -> None:
+    header("Statistiques", "Vue d'ensemble du pipeline")
+
+    stats = get_stats()
+    if stats["total"] == 0:
+        st.info("Pas encore de données. Importe ton fichier Excel via ⚙️ Import Excel.")
+        return
+
+    cols = st.columns(5)
+    for i, (key, label) in enumerate(STATUTS.items()):
+        cols[i].metric(label, stats["by_statut"].get(key, 0))
+
+    st.markdown("---")
+    cc1, cc2 = st.columns(2)
+    with cc1:
+        st.markdown("**Par département**")
+        if stats["by_dept"]:
+            df = (pd.DataFrame(list(stats["by_dept"].items()),
+                               columns=["Département", "Total"])
+                  .sort_values("Total", ascending=False))
+            st.bar_chart(df.set_index("Département"))
+        else:
+            st.caption("—")
+    with cc2:
+        st.markdown("**Par type**")
+        if stats["by_type"]:
+            df = pd.DataFrame(list(stats["by_type"].items()), columns=["Type", "Total"])
+            st.bar_chart(df.set_index("Type"))
+        else:
+            st.caption("—")
+
+    st.markdown("---")
+    st.markdown("**Activité par commercial** (leads contactés)")
+    if stats["by_user"]:
+        df = pd.DataFrame(list(stats["by_user"].items()),
+                          columns=["Commercial", "Leads contactés"])
+        st.bar_chart(df.set_index("Commercial"))
+    else:
+        st.caption("Pas encore d'activité enregistrée.")
+
+
+# ─── PAGE: IMPORT ─────────────────────────────────────────────────────────────
+def page_import() -> None:
+    header("Import de leads", "Réservé à l'administrateur")
+
+    st.markdown("""
+Upload un fichier Excel de leads. Le fichier doit contenir au minimum les
+colonnes **Entreprise**, **Type** (Syndic ou Agence) et **Téléphone**. Les
+colonnes **Email**, **Adresse**, **Ville**, **Département** et **Source** sont
+prises en compte si présentes.
+
+**Comportement** :
+- Les nouveaux leads sont ajoutés avec le statut **🆕 À contacter**.
+- Les leads existants (identifiés par leur téléphone) voient leurs
+  coordonnées mises à jour, mais leur **statut, notes, téléphone alternatif
+  et historique sont préservés**.
+""")
+
+    uploaded = st.file_uploader("Fichier Excel (.xlsx)", type="xlsx")
+    if not uploaded:
+        return
+
+    try:
+        df = pd.read_excel(uploaded, sheet_name=0)
+    except Exception as e:
+        st.error(f"Lecture impossible : {e}")
+        return
+
+    st.markdown(f"📊 **{len(df)} lignes** détectées dans le premier onglet.")
+    with st.expander("Aperçu (10 premières lignes)"):
+        st.dataframe(df.head(10), use_container_width=True, hide_index=True)
+
+    if st.button("🚀 Lancer l'import"):
+        with st.spinner("Import en cours…"):
+            try:
+                new, updated, skipped = import_from_excel(df)
+                st.success(
+                    f"✅ Import terminé — **{new}** nouveaux, "
+                    f"**{updated}** mis à jour, **{skipped}** ignorés."
+                )
+                st.balloons()
+            except Exception as e:
+                st.error(f"Échec de l'import : {e}")
+
+
+# ─── ENTRY POINT ──────────────────────────────────────────────────────────────
+def main() -> None:
+    if "user" not in st.session_state:
+        login()
+        return
+
+    page = sidebar()
+    if page in STATUTS:
+        page_leads(page)
+    elif page == "stats":
+        page_stats()
+    elif page == "import":
+        page_import()
+
+
+main()
