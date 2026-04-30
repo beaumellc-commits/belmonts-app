@@ -27,16 +27,10 @@ st.set_page_config(
 def get_users() -> dict[str, str]:
     """
     Lit les credentials :
-    1. Streamlit Cloud → section [auth] de secrets.toml
-    2. Render / autres → variables d'env AUTH_ADMIN, AUTH_COMMERCIAL1, AUTH_COMMERCIAL2
+    1. Render / autres → variables d'env AUTH_ADMIN, AUTH_COMMERCIAL1, AUTH_COMMERCIAL2
+    2. Streamlit Cloud → section [auth] de secrets.toml
     3. Fallback → valeurs par défaut Belmonts (à changer en prod)
     """
-    try:
-        if "auth" in st.secrets:
-            return dict(st.secrets["auth"])
-    except Exception:
-        pass
-
     env_users = {
         k[len("AUTH_"):].lower(): v
         for k, v in os.environ.items()
@@ -44,6 +38,13 @@ def get_users() -> dict[str, str]:
     }
     if env_users:
         return env_users
+
+    try:
+        auth = st.secrets.get("auth")
+        if auth:
+            return dict(auth)
+    except Exception:
+        pass
 
     return {
         "admin":       "belmonts1978",

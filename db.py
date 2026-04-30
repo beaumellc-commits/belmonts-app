@@ -22,13 +22,14 @@ STATUTS: dict[str, str] = {
 
 
 def _get_secret(key: str) -> str | None:
-    """Lit un secret depuis st.secrets (Streamlit Cloud) puis env vars (Render/autres)."""
+    """Lit un secret. Priorité env vars (Render) puis st.secrets (Streamlit Cloud)."""
+    val = os.environ.get(key)
+    if val:
+        return val
     try:
-        if key in st.secrets:
-            return st.secrets[key]
+        return st.secrets.get(key)
     except Exception:
-        pass
-    return os.environ.get(key)
+        return None
 
 
 @st.cache_resource(show_spinner=False)
