@@ -13,11 +13,20 @@ import streamlit as st
 
 # Mapping statut → libellé affiché (utilisé partout dans l'UI)
 STATUTS: dict[str, str] = {
-    "a_contacter":   "🆕 À contacter",
-    "contacte":      "📞 Contacté",
-    "a_recontacter": "📅 À recontacter",
-    "client":        "✅ Client",
-    "refus":         "❌ Refus",
+    "a_contacter":   "À contacter",
+    "contacte":      "Contacté",
+    "a_recontacter": "À recontacter",
+    "client":        "Client",
+    "refus":         "Refus",
+}
+
+# Couleur d'accent par statut — utilisée dans la sidebar et les pills
+STATUTS_COLOR: dict[str, str] = {
+    "a_contacter":   "#cc2020",  # rouge Belmonts (action prioritaire)
+    "contacte":      "#3b82f6",  # bleu (en cours)
+    "a_recontacter": "#f59e0b",  # ambre (à suivre)
+    "client":        "#10b981",  # vert (gagné)
+    "refus":         "#6b7280",  # gris (perdu, désaccentué)
 }
 
 

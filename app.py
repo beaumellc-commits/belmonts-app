@@ -11,7 +11,7 @@ import pandas as pd
 import streamlit as st
 
 from db import (
-    STATUTS, fetch_lead, fetch_leads, get_counts, get_stats,
+    STATUTS, STATUTS_COLOR, fetch_lead, fetch_leads, get_counts, get_stats,
     import_from_excel, update_lead,
 )
 
@@ -65,18 +65,63 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 [data-testid="stHeader"], [data-testid="stMainMenu"], [data-testid="stDeployButton"]
 { display: none !important; }
 
-[data-testid="stSidebar"] { background: #0d1f38 !important; border-right: none !important; }
-[data-testid="stSidebar"] * { color: rgba(255,255,255,0.75) !important; }
-[data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2 { color: #fff !important; }
+[data-testid="stSidebar"] {
+    background: #0d1f38 !important;
+    border-right: none !important;
+    padding-top: 1.5rem !important;
+}
+[data-testid="stSidebar"] * { color: rgba(255,255,255,0.75); }
+
+/* Section labels (LEADS, OUTILS) */
+[data-testid="stSidebar"] .sb-section {
+    font-size: 10px !important;
+    font-weight: 600 !important;
+    letter-spacing: 2px !important;
+    color: rgba(255,255,255,0.35) !important;
+    margin: 1.5rem 0 0.75rem 0.5rem !important;
+    text-transform: uppercase;
+}
+
+/* Boutons de navigation — design pro */
 [data-testid="stSidebar"] .stButton > button {
-    background: transparent !important; color: rgba(255,255,255,0.85) !important;
-    border: 1px solid rgba(255,255,255,0.1) !important; text-align: left !important;
-    font-weight: 400 !important; padding: 0.5rem 0.8rem !important;
-    margin-bottom: 0.25rem !important;
+    background: transparent !important;
+    color: rgba(255,255,255,0.78) !important;
+    border: none !important;
+    border-left: 2px solid transparent !important;
+    border-radius: 0 6px 6px 0 !important;
+    text-align: left !important;
+    font-weight: 400 !important;
+    font-size: 13px !important;
+    padding: 0.55rem 0.9rem !important;
+    margin: 0 0 2px 0 !important;
+    transition: all 0.15s ease !important;
+    width: 100% !important;
+    justify-content: flex-start !important;
 }
 [data-testid="stSidebar"] .stButton > button:hover {
-    background: rgba(204,32,32,0.15) !important;
-    border-color: #cc2020 !important;
+    background: rgba(255,255,255,0.05) !important;
+    color: #fff !important;
+    border-left-color: rgba(255,255,255,0.3) !important;
+}
+[data-testid="stSidebar"] .stButton > button:focus {
+    box-shadow: none !important;
+    outline: none !important;
+}
+
+/* Bouton déconnexion en bas — discret */
+[data-testid="stSidebar"] .sb-logout .stButton > button {
+    background: transparent !important;
+    color: rgba(255,255,255,0.4) !important;
+    border: 1px solid rgba(255,255,255,0.12) !important;
+    border-radius: 6px !important;
+    text-align: center !important;
+    justify-content: center !important;
+    font-size: 12px !important;
+}
+[data-testid="stSidebar"] .sb-logout .stButton > button:hover {
+    background: rgba(204,32,32,0.12) !important;
+    border-color: rgba(204,32,32,0.5) !important;
+    color: #fff !important;
 }
 
 .main .block-container { padding: 1.5rem 2.5rem; max-width: 100%; }
@@ -159,53 +204,78 @@ def login() -> None:
 
 def sidebar() -> str:
     with st.sidebar:
+        # Logo
         st.markdown("""
-        <div style="margin-bottom:1.5rem;">
-            <div style="font-size:18px; font-weight:500; color:#fff; letter-spacing:4px;">
+        <div style="margin: 0 0 2rem 0;">
+            <div style="font-size:17px; font-weight:500; color:#fff; letter-spacing:5px;">
                 BELMON<span style="color:#cc2020;">T</span>S
             </div>
-            <div style="height:1px; background:linear-gradient(90deg,#cc2020,transparent); margin:6px 0 4px;"></div>
-            <div style="font-size:8px; color:rgba(255,255,255,0.4); letter-spacing:3px;">DEPUIS 1978</div>
+            <div style="height:1px; background:linear-gradient(90deg,#cc2020,transparent); margin:6px 0 4px; width:80%;"></div>
+            <div style="font-size:8px; color:rgba(255,255,255,0.35); letter-spacing:3px;">DEPUIS 1978</div>
         </div>
         """, unsafe_allow_html=True)
 
+        # Connexion BD
         try:
             counts = get_counts()
+            db_ok = True
         except Exception:
-            st.error("⚠️ Connexion à la base échouée.")
-            st.caption("Vérifie SUPABASE_URL et SUPABASE_KEY dans Render → Environment.")
             counts = {k: 0 for k in STATUTS}
+            db_ok = False
 
-        st.markdown("**LEADS**")
-        nav = [
-            ("a_contacter",   f"🆕 À contacter ({counts.get('a_contacter', 0)})"),
-            ("contacte",      f"📞 Contactés ({counts.get('contacte', 0)})"),
-            ("a_recontacter", f"📅 À recontacter ({counts.get('a_recontacter', 0)})"),
-            ("client",        f"✅ Clients ({counts.get('client', 0)})"),
-            ("refus",         f"❌ Refus ({counts.get('refus', 0)})"),
-        ]
-        for key, label in nav:
-            if st.button(label, key=f"nav_{key}", use_container_width=True):
-                st.session_state["page"] = key
-                st.session_state.pop("selected_lead", None)
-                st.rerun()
+        if not db_ok:
+            st.markdown("""
+            <div style="background:rgba(204,32,32,0.12); border-left:2px solid #cc2020;
+                        padding:0.6rem 0.8rem; margin-bottom:1rem; border-radius:0 4px 4px 0;
+                        font-size:11px; color:rgba(255,255,255,0.85);">
+                Base de données indisponible.
+            </div>
+            """, unsafe_allow_html=True)
 
-        st.markdown("---")
-        st.markdown("**OUTILS**")
-        if st.button("📊 Statistiques", key="nav_stats", use_container_width=True):
+        # Section LEADS
+        st.markdown('<div class="sb-section">Leads</div>', unsafe_allow_html=True)
+
+        for key, label in STATUTS.items():
+            count = counts.get(key, 0)
+            color = STATUTS_COLOR.get(key, "#6b7280")
+            # Bouton invisible Streamlit (pour le clic) + label HTML stylé au-dessus
+            cols = st.columns([1])
+            with cols[0]:
+                btn_label = f"{label}  ·  {count}"
+                if st.button(btn_label, key=f"nav_{key}", use_container_width=True):
+                    st.session_state["page"] = key
+                    st.session_state.pop("selected_lead", None)
+                    st.session_state.pop(f"page_num_{key}", None)
+                    st.rerun()
+
+        # Section OUTILS
+        st.markdown('<div class="sb-section">Outils</div>', unsafe_allow_html=True)
+
+        if st.button("Statistiques", key="nav_stats", use_container_width=True):
             st.session_state["page"] = "stats"
             st.rerun()
         if st.session_state.get("user") == "admin":
-            if st.button("⚙️ Importer des leads", key="nav_import", use_container_width=True):
+            if st.button("Importer des leads", key="nav_import", use_container_width=True):
                 st.session_state["page"] = "import"
                 st.rerun()
 
-        st.markdown("---")
-        st.caption(f"Connecté : **{st.session_state.get('user', '')}**")
-        if st.button("Déconnexion", key="logout", use_container_width=True):
+        # Pied de sidebar — utilisateur + déconnexion
+        st.markdown(f"""
+        <div style="margin-top:2.5rem; padding-top:1rem; border-top:1px solid rgba(255,255,255,0.08);
+                    font-size:11px; color:rgba(255,255,255,0.4);">
+            Connecté en tant que<br/>
+            <span style="color:rgba(255,255,255,0.85); font-weight:500; font-size:13px;">
+                {st.session_state.get('user', '')}
+            </span>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown('<div class="sb-logout">', unsafe_allow_html=True)
+        if st.button("Se déconnecter", key="logout", use_container_width=True):
             for k in list(st.session_state.keys()):
                 del st.session_state[k]
             st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
 
     return st.session_state.get("page", "a_contacter")
 
