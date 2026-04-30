@@ -57,6 +57,7 @@ def _client():
 
 
 # ─── LECTURE ──────────────────────────────────────────────────────────────────
+@st.cache_data(ttl=30, show_spinner=False)
 def fetch_leads(
     statut: str | None = None,
     departement: str | None = None,
@@ -79,11 +80,13 @@ def fetch_leads(
 
 
 def fetch_lead(lead_id: int) -> dict[str, Any] | None:
+    """Pas de cache : on veut toujours la version la plus fraîche pour l'édition."""
     sb = _client()
     res = sb.table("leads").select("*").eq("id", lead_id).execute()
     return res.data[0] if res.data else None
 
 
+@st.cache_data(ttl=20, show_spinner=False)
 def get_counts() -> dict[str, int]:
     """Compte les leads par statut. Affiché dans la sidebar."""
     sb = _client()
@@ -97,6 +100,7 @@ def get_counts() -> dict[str, int]:
     return counts
 
 
+@st.cache_data(ttl=60, show_spinner=False)
 def get_stats() -> dict[str, Any]:
     sb = _client()
     res = sb.table("leads").select(
@@ -118,6 +122,13 @@ def get_stats() -> dict[str, Any]:
     }
 
 
+def invalidate_cache() -> None:
+    """Vide les caches de lecture après un write. À appeler post-update/import."""
+    fetch_leads.clear()
+    get_counts.clear()
+    get_stats.clear()
+
+
 # ─── ÉCRITURE ─────────────────────────────────────────────────────────────────
 def update_lead(lead_id: int, updates: dict[str, Any], user: str) -> None:
     sb = _client()
@@ -129,6 +140,7 @@ def update_lead(lead_id: int, updates: dict[str, Any], user: str) -> None:
         payload["contacte_par"] = user
 
     sb.table("leads").update(payload).eq("id", lead_id).execute()
+    invalidate_cache()
 
 
 def import_from_excel(df: pd.DataFrame) -> tuple[int, int, int]:
@@ -201,4 +213,5 @@ def import_from_excel(df: pd.DataFrame) -> tuple[int, int, int]:
         sb.table("leads").update(payload).eq("id", lead_id).execute()
         update_count += 1
 
+    invalidate_cache()
     return new_count, update_count, skip
