@@ -1,0 +1,40 @@
+# Configuration Render — déclaration du service web Streamlit.
+# Render lit ce fichier automatiquement quand tu connectes le repo via
+# « New + → Blueprint ». Les variables sensibles (SUPABASE_*) doivent
+# être définies à la main dans Render Dashboard → Environment.
+
+services:
+  - type: web
+    name: belmonts-crm
+    runtime: python
+    region: frankfurt        # le plus proche de Paris
+    plan: free               # 750h gratuites / mois — sleep après 15min inactivité
+    branch: main
+    autoDeploy: true         # redéploie automatiquement à chaque push sur main
+
+    buildCommand: pip install -r requirements.txt
+
+    startCommand: >
+      streamlit run app.py
+      --server.port=$PORT
+      --server.address=0.0.0.0
+      --server.headless=true
+      --server.enableCORS=false
+      --server.enableXsrfProtection=true
+      --browser.gatherUsageStats=false
+
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+
+      # Secrets — à définir dans Render Dashboard → Environment (jamais commitées)
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      - key: AUTH_ADMIN
+        sync: false
+      - key: AUTH_COMMERCIAL1
+        sync: false
+      - key: AUTH_COMMERCIAL2
+        sync: false

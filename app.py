@@ -4,6 +4,7 @@ Pipeline : À contacter → Contacté → À recontacter → Client / Refus.
 """
 from __future__ import annotations
 
+import os
 from datetime import date, datetime
 
 import pandas as pd
@@ -24,12 +25,26 @@ st.set_page_config(
 
 
 def get_users() -> dict[str, str]:
-    """Lit les credentials depuis st.secrets, fallback sur les valeurs par défaut."""
+    """
+    Lit les credentials :
+    1. Streamlit Cloud → section [auth] de secrets.toml
+    2. Render / autres → variables d'env AUTH_ADMIN, AUTH_COMMERCIAL1, AUTH_COMMERCIAL2
+    3. Fallback → valeurs par défaut Belmonts (à changer en prod)
+    """
     try:
         if "auth" in st.secrets:
             return dict(st.secrets["auth"])
     except Exception:
         pass
+
+    env_users = {
+        k[len("AUTH_"):].lower(): v
+        for k, v in os.environ.items()
+        if k.startswith("AUTH_") and v
+    }
+    if env_users:
+        return env_users
+
     return {
         "admin":       "belmonts1978",
         "commercial1": "belmonts2024",

@@ -4,6 +4,7 @@ Toutes les opérations sur la table `leads` passent par ce module.
 """
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from typing import Any
 
@@ -20,12 +21,28 @@ STATUTS: dict[str, str] = {
 }
 
 
+def _get_secret(key: str) -> str | None:
+    """Lit un secret depuis st.secrets (Streamlit Cloud) puis env vars (Render/autres)."""
+    try:
+        if key in st.secrets:
+            return st.secrets[key]
+    except Exception:
+        pass
+    return os.environ.get(key)
+
+
 @st.cache_resource(show_spinner=False)
 def _client():
     """Singleton du client Supabase. Cache géré par Streamlit."""
     from supabase import create_client
-    url = st.secrets["SUPABASE_URL"]
-    key = st.secrets["SUPABASE_KEY"]
+    url = _get_secret("SUPABASE_URL")
+    key = _get_secret("SUPABASE_KEY")
+    if not url or not key:
+        raise RuntimeError(
+            "Variables SUPABASE_URL et SUPABASE_KEY introuvables. "
+            "Configure-les dans .streamlit/secrets.toml (local) "
+            "ou dans les variables d'environnement (Render)."
+        )
     return create_client(url, key)
 
 
