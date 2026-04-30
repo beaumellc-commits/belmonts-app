@@ -59,6 +59,12 @@ st.markdown("""
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
 html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 
+/* Masque les éléments Streamlit en anglais (menu, footer, statut, etc.) */
+#MainMenu, footer, header { visibility: hidden !important; height: 0 !important; }
+[data-testid="stToolbar"], [data-testid="stStatusWidget"], [data-testid="stDecoration"],
+[data-testid="stHeader"], [data-testid="stMainMenu"], [data-testid="stDeployButton"]
+{ display: none !important; }
+
 [data-testid="stSidebar"] { background: #0d1f38 !important; border-right: none !important; }
 [data-testid="stSidebar"] * { color: rgba(255,255,255,0.75) !important; }
 [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2 { color: #fff !important; }
@@ -165,9 +171,9 @@ def sidebar() -> str:
 
         try:
             counts = get_counts()
-        except Exception as e:
-            st.error("⚠️ Connexion Supabase échouée. Vérifie tes secrets.")
-            st.caption(f"{e}")
+        except Exception:
+            st.error("⚠️ Connexion à la base échouée.")
+            st.caption("Vérifie SUPABASE_URL et SUPABASE_KEY dans Render → Environment.")
             counts = {k: 0 for k in STATUTS}
 
         st.markdown("**LEADS**")
