@@ -14,7 +14,7 @@ import streamlit as st
 
 from db import (
     STATUTS, STATUTS_COLOR, STATUTS_RDV, TYPES_RDV,
-    add_rdv_contact, create_rdv, delete_rdv, delete_rdv_contact,
+    add_rdv_contact, create_rdv, delete_lead, delete_rdv, delete_rdv_contact,
     fetch_contacts_for_rdv, fetch_lead, fetch_leads, fetch_rdvs,
     fetch_rdvs_for_lead, fetch_villes, get_counts, get_stats,
     import_from_excel, update_lead, update_rdv, update_rdv_contact,
@@ -23,7 +23,7 @@ from db import (
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Belmonts — CRM",
-    page_icon="🏗️",
+    page_icon="⬢",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -480,9 +480,9 @@ def page_leads(statut: str) -> None:
             with c2:
                 tel = row.get("telephone") or ""
                 tel_alt = row.get("telephone_alt") or ""
-                st.markdown(f"📞 {tel or '—'}")
+                st.markdown(f"{tel or '—'}")
                 if tel_alt:
-                    st.caption(f"📞 alt : {tel_alt}")
+                    st.caption(f"alt : {tel_alt}")
 
             with c3:
                 # Selectbox inline → changement de statut auto-save
@@ -556,17 +556,21 @@ def render_lead_detail(lead_id: int) -> None:
             st.caption(f"{lead['type']} — {lead.get('ville') or '?'} "
                        f"({lead.get('departement') or '?'})")
         with c_h2:
-            if st.button("✕ Fermer", key="close_detail"):
+            if st.button("Fermer", key="close_detail"):
                 st.session_state.pop("selected_lead", None)
                 st.rerun()
 
-        # Coordonnées
-        st.markdown("**📞 Coordonnées**")
+        # Coordonnées (toutes éditables — info client ou changement organisationnel)
+        st.markdown("**Coordonnées**")
         cc1, cc2 = st.columns(2)
         with cc1:
-            st.markdown(f"**Téléphone principal** : `{lead.get('telephone') or '—'}`")
-            st.markdown(f"**Adresse** : {lead.get('adresse') or '—'}")
-        with cc2:
+            nom_edit = st.text_input("Nom de l'entreprise",
+                                     value=lead.get("nom") or "",
+                                     key=f"nom_{lead_id}")
+            tel_edit = st.text_input("Téléphone principal",
+                                     value=lead.get("telephone") or "",
+                                     placeholder="01 23 45 67 89",
+                                     key=f"tel_{lead_id}")
             tel_alt = st.text_input("Téléphone alternatif",
                                     value=lead.get("telephone_alt") or "",
                                     placeholder="06 12 34 56 78",
@@ -575,9 +579,29 @@ def render_lead_detail(lead_id: int) -> None:
                                   value=lead.get("email") or "",
                                   placeholder="contact@entreprise.fr",
                                   key=f"email_{lead_id}")
+        with cc2:
+            adresse_edit = st.text_input("Adresse",
+                                         value=lead.get("adresse") or "",
+                                         key=f"adr_{lead_id}")
+            tcc1, tcc2 = st.columns(2)
+            with tcc1:
+                ville_edit = st.text_input("Ville",
+                                           value=lead.get("ville") or "",
+                                           key=f"ville_{lead_id}")
+            with tcc2:
+                dept_edit = st.text_input("Département",
+                                          value=lead.get("departement") or "",
+                                          placeholder="ex: 75",
+                                          key=f"dept_{lead_id}")
+            type_keys = ["Syndic", "Agence"]
+            cur_type = lead.get("type") or "Syndic"
+            type_edit = st.selectbox("Type de prospect",
+                                     type_keys,
+                                     index=type_keys.index(cur_type) if cur_type in type_keys else 0,
+                                     key=f"type_edit_{lead_id}")
 
         # Suivi commercial
-        st.markdown("**🎯 Suivi commercial**")
+        st.markdown("**Suivi commercial**")
         sc1, sc2 = st.columns(2)
         with sc1:
             statut_keys = list(STATUTS.keys())
@@ -602,7 +626,7 @@ def render_lead_detail(lead_id: int) -> None:
                                            value=recontact_value,
                                            key=f"recontact_{lead_id}")
 
-        notes = st.text_area("📝 Notes",
+        notes = st.text_area("Notes",
                              value=lead.get("notes") or "",
                              height=120,
                              placeholder="ex: RDV jeudi 14h avec M. Durand. Demande devis ravalement.",
@@ -614,46 +638,81 @@ def render_lead_detail(lead_id: int) -> None:
         if last_contact:
             try:
                 ts = datetime.fromisoformat(str(last_contact).replace("Z", "+00:00"))
-                st.caption(f"📅 Dernier contact : **{ts:%d/%m/%Y %H:%M}** par **{last_user or '—'}**")
+                st.caption(f"Dernier contact : **{ts:%d/%m/%Y %H:%M}** par **{last_user or '—'}**")
             except Exception:
-                st.caption(f"📅 Dernier contact : {last_contact} par {last_user or '—'}")
+                st.caption(f"Dernier contact : {last_contact} par {last_user or '—'}")
 
         # Section Rendez-vous (briefing bureau ↔ compte-rendu terrain)
         st.markdown("---")
         _render_rdv_section(lead_id, lead, user)
         st.markdown("---")
 
+        # Payload commun (tous les champs éditables sont sauvegardés à chaque action)
+        full_payload: dict = {
+            "nom": (nom_edit or "").strip() or lead.get("nom"),
+            "type": type_edit,
+            "telephone": (tel_edit or "").strip(),
+            "telephone_alt": tel_alt,
+            "email": email,
+            "adresse": adresse_edit,
+            "ville": ville_edit,
+            "departement": dept_edit,
+            "notes": notes,
+            "date_recontact": date_recontact.isoformat() if date_recontact else None,
+        }
+
         # Actions
         ac1, ac2, ac3, ac4 = st.columns(4)
         with ac1:
-            if st.button("💾 Enregistrer", key=f"save_{lead_id}", use_container_width=True):
-                update_lead(lead_id, {
-                    "telephone_alt": tel_alt,
-                    "email": email,
-                    "statut": new_statut,
-                    "notes": notes,
-                    "date_recontact": date_recontact.isoformat() if date_recontact else None,
-                }, user)
-                st.success("✅ Enregistré")
+            if st.button("Enregistrer", key=f"save_{lead_id}", use_container_width=True):
+                update_lead(lead_id, {**full_payload, "statut": new_statut}, user)
+                st.success("Enregistré")
                 st.rerun()
         with ac2:
-            if st.button("📞 Marquer contacté", key=f"contact_{lead_id}", use_container_width=True):
-                update_lead(lead_id, {"statut": "contacte", "notes": notes,
-                                      "telephone_alt": tel_alt, "email": email}, user)
+            if st.button("Marquer contacté", key=f"contact_{lead_id}", use_container_width=True):
+                update_lead(lead_id, {**full_payload, "statut": "contacte"}, user)
                 st.session_state.pop("selected_lead", None)
                 st.rerun()
         with ac3:
-            if st.button("✅ Client", key=f"client_{lead_id}", use_container_width=True):
-                update_lead(lead_id, {"statut": "client", "notes": notes,
-                                      "telephone_alt": tel_alt, "email": email}, user)
+            if st.button("Client", key=f"client_{lead_id}", use_container_width=True):
+                update_lead(lead_id, {**full_payload, "statut": "client"}, user)
                 st.session_state.pop("selected_lead", None)
                 st.rerun()
         with ac4:
-            if st.button("❌ Refus", key=f"refus_{lead_id}", use_container_width=True):
-                update_lead(lead_id, {"statut": "refus", "notes": notes,
-                                      "telephone_alt": tel_alt, "email": email}, user)
+            if st.button("Refus", key=f"refus_{lead_id}", use_container_width=True):
+                update_lead(lead_id, {**full_payload, "statut": "refus"}, user)
                 st.session_state.pop("selected_lead", None)
                 st.rerun()
+
+        # Suppression (zone "danger" en bas, avec confirmation à 2 clics)
+        st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
+        confirm_key = f"confirm_del_{lead_id}"
+        if not st.session_state.get(confirm_key):
+            if st.button("Supprimer ce lead", key=f"del_lead_{lead_id}",
+                         help="Supprime définitivement ce lead et tous ses RDV"):
+                st.session_state[confirm_key] = True
+                st.rerun()
+        else:
+            st.warning(
+                f"Confirmer la suppression de **{lead.get('nom')}** ? "
+                "Cette action supprimera aussi tous ses rendez-vous et est irréversible."
+            )
+            cc_d1, cc_d2 = st.columns(2)
+            with cc_d1:
+                if st.button("Confirmer la suppression",
+                             key=f"confirm_del_btn_{lead_id}",
+                             use_container_width=True):
+                    delete_lead(lead_id)
+                    st.session_state.pop(confirm_key, None)
+                    st.session_state.pop("selected_lead", None)
+                    st.toast(f"Lead « {lead.get('nom')} » supprimé")
+                    st.rerun()
+            with cc_d2:
+                if st.button("Annuler",
+                             key=f"cancel_del_btn_{lead_id}",
+                             use_container_width=True):
+                    st.session_state.pop(confirm_key, None)
+                    st.rerun()
 
 
 # ─── SECTION RDV (dans la fiche d'un lead) ───────────────────────────────────
@@ -672,13 +731,13 @@ def _render_rdv_section(lead_id: int, lead: dict, user: str) -> None:
     history = [r for r in rdvs if r.get("statut") != "a_venir"]
     n_upcoming = len(upcoming)
 
-    label = f"📅 **Rendez-vous** ({len(rdvs)})"
+    label = f"**Rendez-vous** ({len(rdvs)})"
     if n_upcoming:
         label += f"   ·  {n_upcoming} à venir"
     st.markdown(label)
 
     # Form de création
-    with st.expander("➕ Planifier un nouveau rendez-vous", expanded=(len(rdvs) == 0)):
+    with st.expander("Planifier un nouveau rendez-vous", expanded=(len(rdvs) == 0)):
         with st.form(f"create_rdv_{lead_id}", clear_on_submit=True):
             c1, c2 = st.columns(2)
             with c1:
@@ -711,13 +770,13 @@ def _render_rdv_section(lead_id: int, lead: dict, user: str) -> None:
                                  placeholder="Adresse du RDV",
                                  key=f"new_rdv_lieu_{lead_id}")
             briefing = st.text_area(
-                "📋 Briefing pour le commercial terrain",
+                "Briefing pour le commercial terrain",
                 placeholder="Contexte du syndic, contact à demander, "
                             "points clés à aborder, attentes du client...",
                 height=120,
                 key=f"new_rdv_brief_{lead_id}",
             )
-            submitted = st.form_submit_button("📅 Créer le rendez-vous",
+            submitted = st.form_submit_button("Créer le rendez-vous",
                                               use_container_width=False)
             if submitted:
                 dt = datetime.combine(d, h)
@@ -730,7 +789,7 @@ def _render_rdv_section(lead_id: int, lead: dict, user: str) -> None:
                     "briefing":  briefing,
                 }, user)
                 if created:
-                    st.success(f"✅ RDV créé pour le {dt:%d/%m/%Y à %H:%M}")
+                    st.success(f"RDV créé pour le {dt:%d/%m/%Y à %H:%M}")
                     st.rerun()
                 else:
                     st.error("Erreur à la création du RDV.")
@@ -757,16 +816,17 @@ def _render_rdv_card(rdv: dict, user: str, expanded: bool = False) -> None:
     statut_key = rdv.get("statut") or "a_venir"
     type_label = TYPES_RDV.get(rdv.get("type") or "physique", rdv.get("type", ""))
 
-    statut_dot = {
-        "a_venir":  "🟢",
+    # Indicateur de statut sobre (Unicode minimal, pas d'emoji)
+    statut_marker = {
+        "a_venir":  "•",
         "termine":  "✓",
-        "annule":   "✗",
-        "reporte":  "⏸",
-    }.get(statut_key, "•")
+        "annule":   "×",
+        "reporte":  "○",
+    }.get(statut_key, "·")
 
     when = f"{dt:%a %d/%m %H:%M}" if dt else "?"
     title = (
-        f"{statut_dot} **{when}**  ·  {type_label}  ·  "
+        f"{statut_marker}  **{when}**  ·  {type_label}  ·  "
         f"Assigné à **{rdv.get('assigne_a') or '—'}**  "
         f"·  *{STATUTS_RDV.get(statut_key, statut_key)}*"
     )
@@ -774,7 +834,7 @@ def _render_rdv_card(rdv: dict, user: str, expanded: bool = False) -> None:
     with st.expander(title, expanded=expanded):
         # Briefing (préparation par le bureau)
         briefing = st.text_area(
-            "📋 Briefing (rédigé par le bureau)",
+            "Briefing (rédigé par le bureau)",
             value=rdv.get("briefing") or "",
             key=f"brief_{rdv_id}",
             height=100,
@@ -782,7 +842,7 @@ def _render_rdv_card(rdv: dict, user: str, expanded: bool = False) -> None:
 
         # Compte-rendu (rempli par le terrain après le RDV)
         compte_rendu = st.text_area(
-            "📝 Compte-rendu (à remplir après le RDV)",
+            "Compte-rendu (à remplir après le RDV)",
             value=rdv.get("compte_rendu") or "",
             placeholder="Notes, contacts rencontrés, accord obtenu, "
                         "points en suspens, prochaine étape...",
@@ -791,14 +851,14 @@ def _render_rdv_card(rdv: dict, user: str, expanded: bool = False) -> None:
         )
 
         resultat = st.text_input(
-            "🎯 Résultat / suite à donner",
+            "Résultat / suite à donner",
             value=rdv.get("resultat") or "",
             placeholder="ex : devis demandé, refus, à rappeler dans 1 mois",
             key=f"res_{rdv_id}",
         )
 
         # Lieu (modifiable)
-        lieu = st.text_input("📍 Lieu",
+        lieu = st.text_input("Lieu",
                              value=rdv.get("lieu") or "",
                              key=f"lieu_{rdv_id}")
 
@@ -820,7 +880,7 @@ def _render_rdv_card(rdv: dict, user: str, expanded: bool = False) -> None:
         if statut_key == "a_venir":
             b1, b2, b3, b4, b5 = st.columns(5)
             with b1:
-                if st.button("💾 Enregistrer", key=f"save_rdv_{rdv_id}",
+                if st.button("Enregistrer", key=f"save_rdv_{rdv_id}",
                              use_container_width=True):
                     update_rdv(rdv_id, {
                         "briefing": briefing,
@@ -831,7 +891,7 @@ def _render_rdv_card(rdv: dict, user: str, expanded: bool = False) -> None:
                     st.success("Sauvegardé")
                     st.rerun()
             with b2:
-                if st.button("✅ Marquer terminé", key=f"done_rdv_{rdv_id}",
+                if st.button("Marquer terminé", key=f"done_rdv_{rdv_id}",
                              use_container_width=True):
                     update_rdv(rdv_id, {
                         "statut": "termine",
@@ -840,27 +900,27 @@ def _render_rdv_card(rdv: dict, user: str, expanded: bool = False) -> None:
                         "resultat": resultat,
                         "lieu": lieu,
                     })
-                    st.toast("RDV marqué terminé ✅")
+                    st.toast("RDV marqué terminé")
                     st.rerun()
             with b3:
-                if st.button("⏸ Reporter", key=f"postpone_rdv_{rdv_id}",
+                if st.button("Reporter", key=f"postpone_rdv_{rdv_id}",
                              use_container_width=True):
                     update_rdv(rdv_id, {"statut": "reporte"})
                     st.rerun()
             with b4:
-                if st.button("✗ Annuler", key=f"cancel_rdv_{rdv_id}",
+                if st.button("Annuler", key=f"cancel_rdv_{rdv_id}",
                              use_container_width=True):
                     update_rdv(rdv_id, {"statut": "annule"})
                     st.rerun()
             with b5:
-                if st.button("🗑 Supprimer", key=f"del_rdv_{rdv_id}",
+                if st.button("Supprimer", key=f"del_rdv_{rdv_id}",
                              use_container_width=True):
                     delete_rdv(rdv_id)
                     st.rerun()
         else:
             b1, b2 = st.columns([1, 1])
             with b1:
-                if st.button("💾 Sauvegarder le compte-rendu",
+                if st.button("Sauvegarder le compte-rendu",
                              key=f"save_rdv_{rdv_id}",
                              use_container_width=True):
                     update_rdv(rdv_id, {
@@ -870,7 +930,7 @@ def _render_rdv_card(rdv: dict, user: str, expanded: bool = False) -> None:
                     st.success("Compte-rendu sauvegardé")
                     st.rerun()
             with b2:
-                if st.button("↻ Re-passer en « à venir »",
+                if st.button("Réactiver",
                              key=f"reopen_rdv_{rdv_id}",
                              use_container_width=True):
                     update_rdv(rdv_id, {"statut": "a_venir"})
@@ -882,7 +942,7 @@ def _render_contacts_section(rdv_id: int, statut_key: str) -> None:
     contacts = fetch_contacts_for_rdv(rdv_id)
     n = len(contacts)
 
-    st.markdown(f"##### 👥 Contacts rencontrés ({n})")
+    st.markdown(f"##### Contacts rencontrés ({n})")
 
     # Liste des contacts existants (chaque contact = container éditable)
     for ct in contacts:
@@ -925,16 +985,16 @@ def _render_contacts_section(rdv_id: int, statut_key: str) -> None:
                 )
             with cc2:
                 st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-                if st.button("💾", key=f"save_ct_{ct_id}",
+                if st.button("✓", key=f"save_ct_{ct_id}",
                              help="Enregistrer ce contact",
                              use_container_width=True):
                     update_rdv_contact(ct_id, {
                         "nom": nom, "poste": poste, "telephone": tel,
                         "email": email, "notes": notes,
                     })
-                    st.toast("Contact mis à jour ✅")
+                    st.toast("Contact mis à jour")
                     st.rerun()
-                if st.button("🗑", key=f"del_ct_{ct_id}",
+                if st.button("×", key=f"del_ct_{ct_id}",
                              help="Supprimer ce contact",
                              use_container_width=True):
                     delete_rdv_contact(ct_id)
@@ -945,7 +1005,7 @@ def _render_contacts_section(rdv_id: int, statut_key: str) -> None:
 
     # Formulaire pour ajouter un nouveau contact
     with st.form(f"new_contact_form_{rdv_id}", clear_on_submit=True):
-        st.markdown("**➕ Ajouter un contact rencontré**")
+        st.markdown("**Ajouter un contact rencontré**")
         nc1, nc2 = st.columns(2)
         with nc1:
             new_nom = st.text_input("Nom *", key=f"new_ct_nom_{rdv_id}",
@@ -965,7 +1025,7 @@ def _render_contacts_section(rdv_id: int, statut_key: str) -> None:
             key=f"new_ct_notes_{rdv_id}",
             placeholder="ex : Décisionnaire, demande devis ravalement façade",
         )
-        if st.form_submit_button("➕ Ajouter ce contact"):
+        if st.form_submit_button("Ajouter ce contact"):
             if not (new_nom or "").strip():
                 st.error("Le nom du contact est requis.")
             else:
@@ -974,7 +1034,7 @@ def _render_contacts_section(rdv_id: int, statut_key: str) -> None:
                     "telephone": new_tel, "email": new_email,
                     "notes": new_notes,
                 })
-                st.toast("Contact ajouté ✅")
+                st.toast("Contact ajouté")
                 st.rerun()
 
 
@@ -1056,10 +1116,15 @@ def page_rdv() -> None:
         lead_data = rdv.get("leads") or {}
         dt = _parse_rdv_dt(rdv.get("date_rdv"))
         statut_key = rdv.get("statut") or "a_venir"
-        statut_dot = {
-            "a_venir": "🟢", "termine": "✓",
-            "annule": "✗", "reporte": "⏸",
-        }.get(statut_key, "•")
+        # Point coloré CSS selon le statut (vert / gris / rouge / orange)
+        statut_color = {
+            "a_venir": "#10b981", "termine": "#6b7280",
+            "annule":  "#cc2020", "reporte": "#f59e0b",
+        }.get(statut_key, "#6b7280")
+        statut_dot_html = (
+            f"<span style='color:{statut_color}; font-size:14px; "
+            f"line-height:1; vertical-align:middle;'>●</span>"
+        )
         type_label = TYPES_RDV.get(rdv.get("type") or "physique", "")
 
         with st.container(border=True):
@@ -1073,23 +1138,26 @@ def page_rdv() -> None:
                     f"({lead_data.get('departement') or '?'})"
                 )
                 if lead_data.get("adresse"):
-                    st.caption(f"📍 {lead_data['adresse']}")
+                    st.caption(lead_data['adresse'])
 
             with c2:
                 if dt:
-                    st.markdown(f"**{statut_dot} {dt:%a %d/%m %H:%M}**")
+                    st.markdown(
+                        f"{statut_dot_html} **{dt:%a %d/%m %H:%M}**",
+                        unsafe_allow_html=True,
+                    )
                 else:
-                    st.markdown(f"{statut_dot} ?")
+                    st.markdown(f"{statut_dot_html} ?", unsafe_allow_html=True)
                 st.caption(f"{type_label} · {rdv.get('duree_min', 60)} min")
                 if rdv.get("lieu"):
-                    st.caption(f"📍 {rdv['lieu']}")
+                    st.caption(rdv['lieu'])
 
             with c3:
                 st.markdown(
                     f"Assigné à : **{rdv.get('assigne_a') or '—'}**"
                 )
                 if lead_data.get("telephone"):
-                    st.caption(f"📞 {lead_data['telephone']}")
+                    st.caption(lead_data['telephone'])
 
             with c4:
                 if st.button("Ouvrir →", key=f"go_lead_{rdv['id']}",
@@ -1173,19 +1241,18 @@ prises en compte si présentes.
         st.error(f"Lecture impossible : {e}")
         return
 
-    st.markdown(f"📊 **{len(df)} lignes** détectées dans le premier onglet.")
+    st.markdown(f"**{len(df)} lignes** détectées dans le premier onglet.")
     with st.expander("Aperçu (10 premières lignes)"):
         st.dataframe(df.head(10), use_container_width=True, hide_index=True)
 
-    if st.button("🚀 Lancer l'import"):
+    if st.button("Lancer l'import"):
         with st.spinner("Import en cours…"):
             try:
                 new, updated, skipped = import_from_excel(df)
                 st.success(
-                    f"✅ Import terminé — **{new}** nouveaux, "
+                    f"Import terminé — **{new}** nouveaux, "
                     f"**{updated}** mis à jour, **{skipped}** ignorés."
                 )
-                st.balloons()
             except Exception as e:
                 st.error(f"Échec de l'import : {e}")
 

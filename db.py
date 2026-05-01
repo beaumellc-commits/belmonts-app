@@ -238,6 +238,18 @@ def update_lead(lead_id: int, updates: dict[str, Any], user: str) -> None:
     invalidate_cache()
 
 
+def delete_lead(lead_id: int) -> None:
+    """Supprime un lead. Cascade auto sur ses RDV (et leurs contacts)."""
+    sb = _client()
+    sb.table("leads").delete().eq("id", lead_id).execute()
+    invalidate_cache()
+    # Les RDV / contacts liés sont supprimés en cascade par la BD,
+    # mais on vide aussi leur cache au cas où.
+    fetch_rdvs_for_lead.clear()
+    fetch_rdvs.clear()
+    fetch_contacts_for_rdv.clear()
+
+
 def _clean_str(v: Any) -> str:
     """Convertit en chaîne propre. Gère les NaN / None / '<NA>' que pandas
     peut produire à la lecture d'un Excel."""
