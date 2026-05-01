@@ -465,15 +465,12 @@ def sidebar() -> str:
         # Section OUTILS
         st.markdown('<div class="sb-section">Outils</div>', unsafe_allow_html=True)
 
-        # Badge RDV : nb de rendez-vous à venir assignés à l'utilisateur courant
+        # Badge RDV : nb total de rendez-vous à venir (toute l'équipe)
         try:
-            n_rdv_user = get_rdv_upcoming_count(user=st.session_state.get("user"))
+            n_rdv = get_rdv_upcoming_count()
         except Exception:
-            n_rdv_user = 0
-        rdv_label = (
-            f"Rendez-vous  ·  {n_rdv_user}" if n_rdv_user > 0
-            else "Rendez-vous"
-        )
+            n_rdv = 0
+        rdv_label = f"Rendez-vous  ·  {n_rdv}"
 
         if st.button(rdv_label, key="nav_rdv",
                      use_container_width=True,
