@@ -17,7 +17,8 @@ from db import (
     add_rdv_contact, create_rdv, delete_lead, delete_rdv, delete_rdv_contact,
     fetch_contacts_for_rdv, fetch_lead, fetch_leads_page, fetch_rdvs,
     fetch_rdvs_for_lead, fetch_villes, get_counts, get_leads_count,
-    get_stats, import_from_excel, update_lead, update_rdv, update_rdv_contact,
+    get_rdv_upcoming_count, get_stats, import_from_excel,
+    update_lead, update_rdv, update_rdv_contact,
 )
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
@@ -464,7 +465,17 @@ def sidebar() -> str:
         # Section OUTILS
         st.markdown('<div class="sb-section">Outils</div>', unsafe_allow_html=True)
 
-        if st.button("Rendez-vous", key="nav_rdv",
+        # Badge RDV : nb de rendez-vous à venir assignés à l'utilisateur courant
+        try:
+            n_rdv_user = get_rdv_upcoming_count(user=st.session_state.get("user"))
+        except Exception:
+            n_rdv_user = 0
+        rdv_label = (
+            f"Rendez-vous  ·  {n_rdv_user}" if n_rdv_user > 0
+            else "Rendez-vous"
+        )
+
+        if st.button(rdv_label, key="nav_rdv",
                      use_container_width=True,
                      type="primary" if current_page == "rdv" else "secondary"):
             st.session_state["page"] = "rdv"

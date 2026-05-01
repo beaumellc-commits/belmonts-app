@@ -480,6 +480,22 @@ def import_from_excel(df: pd.DataFrame) -> tuple[int, int, int]:
 def _invalidate_rdv_cache() -> None:
     fetch_rdvs_for_lead.clear()
     fetch_rdvs.clear()
+    get_rdv_upcoming_count.clear()
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def get_rdv_upcoming_count(user: str | None = None) -> int:
+    """
+    Compte les RDV au statut 'à venir'.
+    Si `user` est passé : uniquement ceux qui lui sont assignés.
+    Sinon : tous les RDV à venir de l'équipe.
+    """
+    sb = _client()
+    q = sb.table("rendez_vous").select("id", count="exact", head=True).eq("statut", "a_venir")
+    if user:
+        q = q.eq("assigne_a", user)
+    res = q.execute()
+    return res.count or 0
 
 
 @st.cache_data(ttl=20, show_spinner=False)
