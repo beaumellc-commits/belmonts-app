@@ -5,6 +5,7 @@ Toutes les opérations sur la table `leads` passent par ce module.
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime
 from typing import Any
 
@@ -61,6 +62,7 @@ def _client():
 def fetch_leads(
     statut: str | None = None,
     departement: str | None = None,
+    ville: str | None = None,
     type_prospect: str | None = None,
     search: str | None = None,
     limit: int = 5000,
@@ -71,12 +73,40 @@ def fetch_leads(
         q = q.eq("statut", statut)
     if departement:
         q = q.eq("departement", departement)
+    if ville:
+        q = q.eq("ville", ville)
     if type_prospect:
         q = q.eq("type", type_prospect)
     if search and search.strip():
         q = q.ilike("nom", f"%{search.strip()}%")
     res = q.order("date_modification", desc=True).limit(limit).execute()
     return pd.DataFrame(res.data or [])
+
+
+def _ville_sort_key(v: str) -> tuple[int, Any]:
+    """Trie 'Paris 1' à 'Paris 20' numériquement, le reste alphabétiquement."""
+    m = re.match(r"^Paris\s+(\d+)$", (v or "").strip(), re.IGNORECASE)
+    if m:
+        return (0, int(m.group(1)))
+    return (1, (v or "").lower())
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def fetch_villes(departement: str | None = None) -> list[str]:
+    """
+    Retourne la liste triée des villes/arrondissements présents en BD,
+    optionnellement filtrés par département.
+
+    Pour Paris (75) : Paris 1, Paris 2, …, Paris 20 (ordre numérique).
+    Pour les autres dpt : ordre alphabétique des villes.
+    """
+    sb = _client()
+    q = sb.table("leads").select("ville,departement")
+    if departement:
+        q = q.eq("departement", departement)
+    res = q.limit(50000).execute()
+    villes = {r["ville"] for r in (res.data or []) if r.get("ville")}
+    return sorted(villes, key=_ville_sort_key)
 
 
 def fetch_lead(lead_id: int) -> dict[str, Any] | None:
@@ -125,6 +155,7 @@ def get_stats() -> dict[str, Any]:
 def invalidate_cache() -> None:
     """Vide les caches de lecture après un write. À appeler post-update/import."""
     fetch_leads.clear()
+    fetch_villes.clear()
     get_counts.clear()
     get_stats.clear()
 

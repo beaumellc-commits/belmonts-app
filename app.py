@@ -13,8 +13,8 @@ import pandas as pd
 import streamlit as st
 
 from db import (
-    STATUTS, STATUTS_COLOR, fetch_lead, fetch_leads, get_counts, get_stats,
-    import_from_excel, update_lead,
+    STATUTS, STATUTS_COLOR, fetch_lead, fetch_leads, fetch_villes,
+    get_counts, get_stats, import_from_excel, update_lead,
 )
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
@@ -361,17 +361,26 @@ def page_leads(statut: str) -> None:
     header(title, sub)
 
     # Filtres
-    c1, c2, c3, c4 = st.columns([1.5, 1.5, 2.5, 1])
+    c1, c2, c3, c4, c5 = st.columns([1.4, 1.8, 1.2, 2.4, 0.9])
     with c1:
         depts = ["Tous", "75", "92", "93", "94", "78", "77", "91", "95"]
         dept = st.selectbox("Département", depts, key=f"dept_{statut}")
     with c2:
-        type_p = st.selectbox("Type", ["Tous", "Syndic", "Agence"], key=f"type_{statut}")
+        ville_options = ["Toutes"] + fetch_villes(
+            departement=dept if dept != "Tous" else None
+        )
+        ville = st.selectbox(
+            "Ville / arrondissement",
+            ville_options,
+            key=f"ville_{statut}_{dept}",  # reset auto si dept change
+        )
     with c3:
-        search = st.text_input("🔍 Recherche par nom",
+        type_p = st.selectbox("Type", ["Tous", "Syndic", "Agence"], key=f"type_{statut}")
+    with c4:
+        search = st.text_input("Recherche par nom",
                                placeholder="ex: Foncia",
                                key=f"search_{statut}")
-    with c4:
+    with c5:
         st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
         if st.button("Actualiser", key=f"refresh_{statut}", use_container_width=True):
             st.rerun()
@@ -379,6 +388,7 @@ def page_leads(statut: str) -> None:
     df = fetch_leads(
         statut=statut,
         departement=dept if dept != "Tous" else None,
+        ville=ville if ville != "Toutes" else None,
         type_prospect=type_p if type_p != "Tous" else None,
         search=search if search else None,
     )
