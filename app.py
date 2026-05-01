@@ -209,6 +209,14 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 }
 .main .stButton > button:hover { background: #aa1818 !important; }
 
+/* Bouton icône (↻) — taille compacte, symbole bien centré */
+.main .stButton > button[kind="secondary"]:has(p:only-child),
+.main .stButton > button:has(div:only-child p:contains("↻")) {
+    font-size: 18px !important;
+    line-height: 1 !important;
+    padding: 0.45rem 0 !important;
+}
+
 .belmonts-header {
     display: flex; align-items: baseline; gap: 12px;
     margin-bottom: 1.25rem; border-bottom: 1px solid #e8e8e4;
@@ -389,7 +397,9 @@ def page_leads(statut: str) -> None:
                                key=f"search_{statut}")
     with c5:
         st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-        if st.button("Actualiser", key=f"refresh_{statut}", use_container_width=True):
+        if st.button("↻", key=f"refresh_{statut}",
+                     help="Actualiser la liste",
+                     use_container_width=True):
             st.rerun()
 
     df = fetch_leads(
@@ -996,7 +1006,9 @@ def page_rdv() -> None:
         )
     with f4:
         st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-        if st.button("Actualiser", key="rdv_refresh", use_container_width=True):
+        if st.button("↻", key="rdv_refresh",
+                     help="Actualiser la liste",
+                     use_container_width=True):
             st.rerun()
 
     # Calcule les bornes de date selon la période
