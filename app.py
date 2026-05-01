@@ -647,6 +647,11 @@ prises en compte si présentes.
 
     try:
         df = pd.read_excel(uploaded, sheet_name=0)
+        # Détection auto : si les fichiers générés par scrape_leads.py ont un
+        # bandeau "BELMONTS" en ligne 1, les vrais en-têtes sont en ligne 2.
+        expected = {"Entreprise", "Nom", "nom", "Téléphone", "telephone"}
+        if not (set(df.columns) & expected):
+            df = pd.read_excel(uploaded, sheet_name=0, header=1)
     except Exception as e:
         st.error(f"Lecture impossible : {e}")
         return
