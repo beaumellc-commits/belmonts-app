@@ -9,7 +9,6 @@ import hmac
 import os
 from datetime import date, datetime
 
-import extra_streamlit_components as stx
 import pandas as pd
 import streamlit as st
 
@@ -27,62 +26,64 @@ st.set_page_config(
 )
 
 
-# ─── PERSISTANCE DE SESSION (cookies) ─────────────────────────────────────────
-COOKIE_USER = "belmonts_user"
-COOKIE_TOKEN = "belmonts_token"
-COOKIE_EXPIRY_DAYS = 30
+# ─── PERSISTANCE DE SESSION (token signé dans l'URL) ──────────────────────────
+# Approche simple sans dépendance : on met un token HMAC-signé dans `?t=…` de
+# l'URL après login. Au refresh, l'URL est conservée par le navigateur, on lit
+# le token, on vérifie la signature, et on restaure la session.
+URL_TOKEN_PARAM = "t"
 
 
 def _auth_secret() -> str:
-    """Clé secrète pour signer les cookies. Configurable via env var."""
+    """Clé secrète pour signer les tokens. À surcharger via env var AUTH_SECRET."""
     return os.environ.get("AUTH_SECRET", "belmonts-default-secret-please-change-me")
 
 
-def _make_token(user: str) -> str:
-    return hmac.new(_auth_secret().encode(), user.encode(), hashlib.sha256).hexdigest()
+def _make_session_token(user: str) -> str:
+    """Génère un token URL-safe : `user.signature_hmac`."""
+    sig = hmac.new(_auth_secret().encode(), user.encode(), hashlib.sha256).hexdigest()
+    return f"{user}.{sig}"
 
 
-@st.cache_resource(show_spinner=False)
-def _cookie_manager() -> stx.CookieManager:
-    return stx.CookieManager()
+def _verify_session_token(token: str) -> str | None:
+    """Vérifie le token, retourne le user si valide, None sinon."""
+    if not token or "." not in token:
+        return None
+    user, sig = token.rsplit(".", 1)
+    expected = hmac.new(_auth_secret().encode(), user.encode(), hashlib.sha256).hexdigest()
+    if hmac.compare_digest(expected, sig):
+        return user
+    return None
 
 
-def _restore_session_from_cookies() -> None:
-    """Si un cookie de session valide existe, on restaure st.session_state['user']."""
+def _restore_session_from_url() -> None:
+    """Restaure st.session_state['user'] depuis le token URL si valide."""
     if "user" in st.session_state:
         return
     try:
-        cm = _cookie_manager()
-        cookies = cm.get_all() or {}
+        token = st.query_params.get(URL_TOKEN_PARAM)
     except Exception:
         return
-    user = cookies.get(COOKIE_USER)
-    token = cookies.get(COOKIE_TOKEN)
-    if not user or not token:
+    if not token:
         return
-    if hmac.compare_digest(_make_token(user), token):
-        users = get_users()
-        if user in users:
-            st.session_state["user"] = user
+    user = _verify_session_token(token)
+    if user and user in get_users():
+        st.session_state["user"] = user
+        st.session_state.setdefault("page", "a_contacter")
 
 
 def _persist_login(user: str) -> None:
-    """Pose les cookies après une connexion réussie."""
-    from datetime import timedelta as _td
-    expires = datetime.now() + _td(days=COOKIE_EXPIRY_DAYS)
+    """Pose le token signé dans l'URL après connexion."""
     try:
-        cm = _cookie_manager()
-        cm.set(COOKIE_USER, user, expires_at=expires, key="set_user_cookie")
-        cm.set(COOKIE_TOKEN, _make_token(user), expires_at=expires, key="set_token_cookie")
+        st.query_params[URL_TOKEN_PARAM] = _make_session_token(user)
     except Exception:
         pass
 
 
-def _clear_login_cookies() -> None:
+def _clear_login_token() -> None:
+    """Retire le token de l'URL au logout."""
     try:
-        cm = _cookie_manager()
-        cm.delete(COOKIE_USER, key="del_user_cookie")
-        cm.delete(COOKIE_TOKEN, key="del_token_cookie")
+        if URL_TOKEN_PARAM in st.query_params:
+            del st.query_params[URL_TOKEN_PARAM]
     except Exception:
         pass
 
@@ -336,7 +337,7 @@ def sidebar() -> str:
 
         st.markdown('<div class="sb-logout">', unsafe_allow_html=True)
         if st.button("Se déconnecter", key="logout", use_container_width=True):
-            _clear_login_cookies()
+            _clear_login_token()
             for k in list(st.session_state.keys()):
                 del st.session_state[k]
             st.rerun()
@@ -659,8 +660,8 @@ prises en compte si présentes.
 
 # ─── ENTRY POINT ──────────────────────────────────────────────────────────────
 def main() -> None:
-    # Tente de restaurer la session depuis les cookies (survit au refresh)
-    _restore_session_from_cookies()
+    # Tente de restaurer la session depuis le token URL (survit au refresh)
+    _restore_session_from_url()
 
     if "user" not in st.session_state:
         login()
