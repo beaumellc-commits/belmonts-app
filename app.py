@@ -318,6 +318,28 @@ div[data-testid="stExpander"] {
 """, unsafe_allow_html=True)
 
 
+def _safe(fn, *args, success: str | None = None,
+          error: str = "Action impossible. Réessaie dans un instant.",
+          **kwargs) -> bool:
+    """
+    Exécute fn(*args, **kwargs) en attrapant les exceptions.
+    - Succès → toast facultatif `success`, retourne True
+    - Échec  → toast `error` discret + log côté serveur (Render Logs)
+    Permet de remplacer un traceback rouge par un toast propre.
+    """
+    try:
+        fn(*args, **kwargs)
+        if success:
+            st.toast(success)
+        return True
+    except Exception as e:
+        import sys
+        print(f"[APP ERROR] {getattr(fn, '__name__', 'unknown')}: {e}",
+              file=sys.stderr, flush=True)
+        st.toast(error, icon="⚠️")
+        return False
+
+
 def show_splash(message: str = "Chargement…"):
     """Affiche un overlay plein écran avec le logo Belmonts et une barre de progression.
     Retourne le placeholder st.empty() qu'on peut .empty() plus tard pour le retirer."""
@@ -609,12 +631,10 @@ def page_leads(statut: str) -> None:
                         payload["date_recontact"] = (
                             date.today() + timedelta(days=14)
                         ).isoformat()
-                    update_lead(lead_id, payload, user)
-                    st.toast(
-                        f"« {row['nom']} » → {STATUTS[new_statut]}",
-                        icon="✅",
-                    )
-                    st.rerun()
+                    if _safe(update_lead, lead_id, payload, user,
+                             success=f"« {row['nom']} » → {STATUTS[new_statut]}",
+                             error="Changement de statut impossible"):
+                        st.rerun()
 
             with c4:
                 if st.button("Ouvrir →", key=f"open_{lead_id}", use_container_width=True):
@@ -772,24 +792,27 @@ def render_lead_detail(lead_id: int) -> None:
         ac1, ac2, ac3, ac4 = st.columns(4)
         with ac1:
             if st.button("Enregistrer", key=f"save_{lead_id}", use_container_width=True):
-                update_lead(lead_id, {**full_payload, "statut": new_statut}, user)
-                st.success("Enregistré")
-                st.rerun()
+                if _safe(update_lead, lead_id, {**full_payload, "statut": new_statut}, user,
+                         success="Enregistré", error="Modification impossible"):
+                    st.rerun()
         with ac2:
             if st.button("Marquer contacté", key=f"contact_{lead_id}", use_container_width=True):
-                update_lead(lead_id, {**full_payload, "statut": "contacte"}, user)
-                st.session_state.pop("selected_lead", None)
-                st.rerun()
+                if _safe(update_lead, lead_id, {**full_payload, "statut": "contacte"}, user,
+                         success="Marqué contacté", error="Modification impossible"):
+                    st.session_state.pop("selected_lead", None)
+                    st.rerun()
         with ac3:
             if st.button("Client", key=f"client_{lead_id}", use_container_width=True):
-                update_lead(lead_id, {**full_payload, "statut": "client"}, user)
-                st.session_state.pop("selected_lead", None)
-                st.rerun()
+                if _safe(update_lead, lead_id, {**full_payload, "statut": "client"}, user,
+                         success="Marqué client", error="Modification impossible"):
+                    st.session_state.pop("selected_lead", None)
+                    st.rerun()
         with ac4:
             if st.button("Refus", key=f"refus_{lead_id}", use_container_width=True):
-                update_lead(lead_id, {**full_payload, "statut": "refus"}, user)
-                st.session_state.pop("selected_lead", None)
-                st.rerun()
+                if _safe(update_lead, lead_id, {**full_payload, "statut": "refus"}, user,
+                         success="Marqué refus", error="Modification impossible"):
+                    st.session_state.pop("selected_lead", None)
+                    st.rerun()
 
         # Suppression (zone "danger" en bas, avec confirmation à 2 clics)
         st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
@@ -809,11 +832,12 @@ def render_lead_detail(lead_id: int) -> None:
                 if st.button("Confirmer la suppression",
                              key=f"confirm_del_btn_{lead_id}",
                              use_container_width=True):
-                    delete_lead(lead_id)
-                    st.session_state.pop(confirm_key, None)
-                    st.session_state.pop("selected_lead", None)
-                    st.toast(f"Lead « {lead.get('nom')} » supprimé")
-                    st.rerun()
+                    if _safe(delete_lead, lead_id,
+                             success=f"Lead « {lead.get('nom')} » supprimé",
+                             error="Suppression impossible"):
+                        st.session_state.pop(confirm_key, None)
+                        st.session_state.pop("selected_lead", None)
+                        st.rerun()
             with cc_d2:
                 if st.button("Annuler",
                              key=f"cancel_del_btn_{lead_id}",
@@ -887,19 +911,17 @@ def _render_rdv_section(lead_id: int, lead: dict, user: str) -> None:
                                               use_container_width=False)
             if submitted:
                 dt = datetime.combine(d, h)
-                created = create_rdv(lead_id, {
+                if _safe(create_rdv, lead_id, {
                     "date_rdv":  dt.isoformat(),
                     "duree_min": int(duree),
                     "type":      type_rdv,
                     "lieu":      lieu,
                     "assigne_a": assigne,
                     "briefing":  briefing,
-                }, user)
-                if created:
-                    st.success(f"RDV créé pour le {dt:%d/%m/%Y à %H:%M}")
+                }, user,
+                   success=f"RDV créé pour le {dt:%d/%m/%Y à %H:%M}",
+                   error="Création du RDV impossible"):
                     st.rerun()
-                else:
-                    st.error("Erreur à la création du RDV.")
 
     if not rdvs:
         return
@@ -989,59 +1011,55 @@ def _render_rdv_card(rdv: dict, user: str, expanded: bool = False) -> None:
             with b1:
                 if st.button("Enregistrer", key=f"save_rdv_{rdv_id}",
                              use_container_width=True):
-                    update_rdv(rdv_id, {
-                        "briefing": briefing,
-                        "compte_rendu": compte_rendu,
-                        "resultat": resultat,
-                        "lieu": lieu,
-                    })
-                    st.success("Sauvegardé")
-                    st.rerun()
+                    if _safe(update_rdv, rdv_id, {
+                        "briefing": briefing, "compte_rendu": compte_rendu,
+                        "resultat": resultat, "lieu": lieu,
+                    }, success="Sauvegardé", error="Sauvegarde impossible"):
+                        st.rerun()
             with b2:
                 if st.button("Marquer terminé", key=f"done_rdv_{rdv_id}",
                              use_container_width=True):
-                    update_rdv(rdv_id, {
-                        "statut": "termine",
-                        "briefing": briefing,
-                        "compte_rendu": compte_rendu,
-                        "resultat": resultat,
+                    if _safe(update_rdv, rdv_id, {
+                        "statut": "termine", "briefing": briefing,
+                        "compte_rendu": compte_rendu, "resultat": resultat,
                         "lieu": lieu,
-                    })
-                    st.toast("RDV marqué terminé")
-                    st.rerun()
+                    }, success="RDV marqué terminé", error="Modification impossible"):
+                        st.rerun()
             with b3:
                 if st.button("Reporter", key=f"postpone_rdv_{rdv_id}",
                              use_container_width=True):
-                    update_rdv(rdv_id, {"statut": "reporte"})
-                    st.rerun()
+                    if _safe(update_rdv, rdv_id, {"statut": "reporte"},
+                             success="RDV reporté", error="Modification impossible"):
+                        st.rerun()
             with b4:
                 if st.button("Annuler", key=f"cancel_rdv_{rdv_id}",
                              use_container_width=True):
-                    update_rdv(rdv_id, {"statut": "annule"})
-                    st.rerun()
+                    if _safe(update_rdv, rdv_id, {"statut": "annule"},
+                             success="RDV annulé", error="Modification impossible"):
+                        st.rerun()
             with b5:
                 if st.button("Supprimer", key=f"del_rdv_{rdv_id}",
                              use_container_width=True):
-                    delete_rdv(rdv_id)
-                    st.rerun()
+                    if _safe(delete_rdv, rdv_id,
+                             success="RDV supprimé", error="Suppression impossible"):
+                        st.rerun()
         else:
             b1, b2 = st.columns([1, 1])
             with b1:
                 if st.button("Sauvegarder le compte-rendu",
                              key=f"save_rdv_{rdv_id}",
                              use_container_width=True):
-                    update_rdv(rdv_id, {
-                        "compte_rendu": compte_rendu,
-                        "resultat": resultat,
-                    })
-                    st.success("Compte-rendu sauvegardé")
-                    st.rerun()
+                    if _safe(update_rdv, rdv_id, {
+                        "compte_rendu": compte_rendu, "resultat": resultat,
+                    }, success="Compte-rendu sauvegardé", error="Sauvegarde impossible"):
+                        st.rerun()
             with b2:
                 if st.button("Réactiver",
                              key=f"reopen_rdv_{rdv_id}",
                              use_container_width=True):
-                    update_rdv(rdv_id, {"statut": "a_venir"})
-                    st.rerun()
+                    if _safe(update_rdv, rdv_id, {"statut": "a_venir"},
+                             success="RDV réactivé", error="Modification impossible"):
+                        st.rerun()
 
 
 # ─── CONTACTS RENCONTRÉS (sous-section d'un RDV) ─────────────────────────────
@@ -1095,17 +1113,19 @@ def _render_contacts_section(rdv_id: int, statut_key: str) -> None:
                 if st.button("✓", key=f"save_ct_{ct_id}",
                              help="Enregistrer ce contact",
                              use_container_width=True):
-                    update_rdv_contact(ct_id, {
+                    if _safe(update_rdv_contact, ct_id, {
                         "nom": nom, "poste": poste, "telephone": tel,
                         "email": email, "notes": notes,
-                    })
-                    st.toast("Contact mis à jour")
-                    st.rerun()
+                    }, success="Contact mis à jour",
+                       error="Sauvegarde impossible"):
+                        st.rerun()
                 if st.button("×", key=f"del_ct_{ct_id}",
                              help="Supprimer ce contact",
                              use_container_width=True):
-                    delete_rdv_contact(ct_id)
-                    st.rerun()
+                    if _safe(delete_rdv_contact, ct_id,
+                             success="Contact supprimé",
+                             error="Suppression impossible"):
+                        st.rerun()
 
     if not contacts:
         st.caption("Aucun contact rencontré enregistré pour ce RDV.")
@@ -1134,15 +1154,14 @@ def _render_contacts_section(rdv_id: int, statut_key: str) -> None:
         )
         if st.form_submit_button("Ajouter ce contact"):
             if not (new_nom or "").strip():
-                st.error("Le nom du contact est requis.")
+                st.toast("Le nom du contact est requis", icon="⚠️")
             else:
-                add_rdv_contact(rdv_id, {
+                if _safe(add_rdv_contact, rdv_id, {
                     "nom": new_nom, "poste": new_poste,
                     "telephone": new_tel, "email": new_email,
                     "notes": new_notes,
-                })
-                st.toast("Contact ajouté")
-                st.rerun()
+                }, success="Contact ajouté", error="Ajout impossible"):
+                    st.rerun()
 
 
 # ─── PAGE: RENDEZ-VOUS (vue globale) ─────────────────────────────────────────

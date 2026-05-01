@@ -13,3 +13,9 @@ maxMessageSize = 1000         # taille max message WebSocket en MB
 
 [browser]
 gatherUsageStats = false
+
+[client]
+# Masque les tracebacks Python en cas d'erreur (UX prod, pas dev)
+showErrorDetails = false
+# Cache la barre d'outils Streamlit (Run/Stop/Settings)
+toolbarMode = "viewer"
