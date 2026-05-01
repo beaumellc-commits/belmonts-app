@@ -7,7 +7,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import pandas as pd
 import streamlit as st
@@ -440,32 +440,61 @@ def page_leads(statut: str) -> None:
     end = start + PAGE_SIZE
     page_df = df.iloc[start:end]
 
-    # Affichage compact en lignes cliquables
+    # Affichage compact avec changement de statut inline (auto-save)
+    user = st.session_state.get("user", "")
+    statut_keys = list(STATUTS.keys())
+
     for _, row in page_df.iterrows():
+        lead_id = int(row["id"])
+        current_statut = row.get("statut") or "a_contacter"
+        if current_statut not in statut_keys:
+            current_statut = "a_contacter"
+
         with st.container(border=True):
-            c1, c2, c3, c4, c5 = st.columns([3, 2, 2, 1.5, 1])
+            c1, c2, c3, c4 = st.columns([3.2, 2.2, 2.4, 1])
+
             with c1:
                 st.markdown(f"**{row['nom']}**")
-                st.caption(f"{row['type']} — {row.get('ville') or '?'} ({row.get('departement') or '?'})")
+                st.caption(
+                    f"{row['type']} — {row.get('ville') or '?'} "
+                    f"({row.get('departement') or '?'})"
+                )
+
             with c2:
                 tel = row.get("telephone") or ""
                 tel_alt = row.get("telephone_alt") or ""
                 st.markdown(f"📞 {tel or '—'}")
                 if tel_alt:
                     st.caption(f"📞 alt : {tel_alt}")
+
             with c3:
-                email = row.get("email") or ""
-                if email:
-                    st.markdown(f"✉️ {email}")
-                else:
-                    st.caption("Pas d'email")
+                # Selectbox inline → changement de statut auto-save
+                new_statut = st.selectbox(
+                    "Statut",
+                    statut_keys,
+                    index=statut_keys.index(current_statut),
+                    format_func=lambda k: STATUTS[k],
+                    key=f"row_statut_{lead_id}",
+                    label_visibility="collapsed",
+                )
+                if new_statut != current_statut:
+                    payload: dict = {"statut": new_statut}
+                    # Pour "À recontacter", on pré-remplit la date à +14 jours
+                    # (modifiable ensuite dans la fiche détaillée).
+                    if new_statut == "a_recontacter":
+                        payload["date_recontact"] = (
+                            date.today() + timedelta(days=14)
+                        ).isoformat()
+                    update_lead(lead_id, payload, user)
+                    st.toast(
+                        f"« {row['nom']} » → {STATUTS[new_statut]}",
+                        icon="✅",
+                    )
+                    st.rerun()
+
             with c4:
-                statut_label = STATUTS.get(row.get("statut") or "a_contacter", "")
-                st.markdown(f"<span class='stat-pill' style='background:#f5f5f3; color:#0d1f38;'>{statut_label}</span>",
-                            unsafe_allow_html=True)
-            with c5:
-                if st.button("Ouvrir →", key=f"open_{row['id']}", use_container_width=True):
-                    st.session_state["selected_lead"] = int(row["id"])
+                if st.button("Ouvrir →", key=f"open_{lead_id}", use_container_width=True):
+                    st.session_state["selected_lead"] = lead_id
                     st.rerun()
 
 
