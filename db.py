@@ -58,17 +58,21 @@ def _client():
 
 
 # ─── LECTURE ──────────────────────────────────────────────────────────────────
-@st.cache_data(ttl=30, show_spinner=False)
-def fetch_leads(
-    statut: str | None = None,
-    departement: str | None = None,
-    ville: str | None = None,
-    type_prospect: str | None = None,
-    search: str | None = None,
-    limit: int = 5000,
-) -> pd.DataFrame:
+# Note : Supabase/PostgREST renvoie max 1000 lignes par requête. On pagine via
+# `.range(start, end)` pour récupérer plus de 1000 leads.
+PAGE_SIZE = 1000
+
+
+def _build_leads_query(
+    statut: str | None,
+    departement: str | None,
+    ville: str | None,
+    type_prospect: str | None,
+    search: str | None,
+    columns: str,
+):
     sb = _client()
-    q = sb.table("leads").select("*")
+    q = sb.table("leads").select(columns)
     if statut:
         q = q.eq("statut", statut)
     if departement:
@@ -79,8 +83,31 @@ def fetch_leads(
         q = q.eq("type", type_prospect)
     if search and search.strip():
         q = q.ilike("nom", f"%{search.strip()}%")
-    res = q.order("date_modification", desc=True).limit(limit).execute()
-    return pd.DataFrame(res.data or [])
+    return q
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def fetch_leads(
+    statut: str | None = None,
+    departement: str | None = None,
+    ville: str | None = None,
+    type_prospect: str | None = None,
+    search: str | None = None,
+    limit: int = 50000,
+) -> pd.DataFrame:
+    """Récupère tous les leads (paginé). Limit max conseillée : 50 000."""
+    all_rows: list[dict] = []
+    start = 0
+    while len(all_rows) < limit:
+        q = _build_leads_query(statut, departement, ville, type_prospect, search, "*")
+        end = min(start + PAGE_SIZE - 1, limit - 1)
+        res = q.order("date_modification", desc=True).range(start, end).execute()
+        rows = res.data or []
+        all_rows.extend(rows)
+        if len(rows) < PAGE_SIZE:
+            break
+        start += PAGE_SIZE
+    return pd.DataFrame(all_rows)
 
 
 def _ville_sort_key(v: str) -> tuple[int, Any]:
@@ -101,11 +128,20 @@ def fetch_villes(departement: str | None = None) -> list[str]:
     Pour les autres dpt : ordre alphabétique des villes.
     """
     sb = _client()
-    q = sb.table("leads").select("ville,departement")
-    if departement:
-        q = q.eq("departement", departement)
-    res = q.limit(50000).execute()
-    villes = {r["ville"] for r in (res.data or []) if r.get("ville")}
+    villes: set[str] = set()
+    start = 0
+    while True:
+        q = sb.table("leads").select("ville,departement")
+        if departement:
+            q = q.eq("departement", departement)
+        res = q.range(start, start + PAGE_SIZE - 1).execute()
+        rows = res.data or []
+        for r in rows:
+            if r.get("ville"):
+                villes.add(r["ville"])
+        if len(rows) < PAGE_SIZE:
+            break
+        start += PAGE_SIZE
     return sorted(villes, key=_ville_sort_key)
 
 
@@ -118,14 +154,20 @@ def fetch_lead(lead_id: int) -> dict[str, Any] | None:
 
 @st.cache_data(ttl=20, show_spinner=False)
 def get_counts() -> dict[str, int]:
-    """Compte les leads par statut. Affiché dans la sidebar."""
+    """Compte les leads par statut. Paginé pour aller au-delà de 1000."""
     sb = _client()
-    res = sb.table("leads").select("statut").limit(50000).execute()
     counts = {k: 0 for k in STATUTS}
-    for row in (res.data or []):
-        s = row.get("statut") or "a_contacter"
-        if s in counts:
-            counts[s] += 1
+    start = 0
+    while True:
+        res = sb.table("leads").select("statut").range(start, start + PAGE_SIZE - 1).execute()
+        rows = res.data or []
+        for row in rows:
+            s = row.get("statut") or "a_contacter"
+            if s in counts:
+                counts[s] += 1
+        if len(rows) < PAGE_SIZE:
+            break
+        start += PAGE_SIZE
     counts["total"] = sum(counts.values())
     return counts
 
@@ -133,10 +175,18 @@ def get_counts() -> dict[str, int]:
 @st.cache_data(ttl=60, show_spinner=False)
 def get_stats() -> dict[str, Any]:
     sb = _client()
-    res = sb.table("leads").select(
-        "statut,type,departement,contacte_par,date_dernier_contact"
-    ).limit(50000).execute()
-    df = pd.DataFrame(res.data or [])
+    all_rows: list[dict] = []
+    start = 0
+    while True:
+        res = sb.table("leads").select(
+            "statut,type,departement,contacte_par,date_dernier_contact"
+        ).range(start, start + PAGE_SIZE - 1).execute()
+        rows = res.data or []
+        all_rows.extend(rows)
+        if len(rows) < PAGE_SIZE:
+            break
+        start += PAGE_SIZE
+    df = pd.DataFrame(all_rows)
     if df.empty:
         return {
             "total": 0, "by_statut": {}, "by_dept": {},
@@ -210,14 +260,33 @@ def import_from_excel(df: pd.DataFrame) -> tuple[int, int, int]:
     }
     df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
 
-    # Récupère les téléphones existants en 1 requête (pour éviter N round-trips)
-    res = sb.table("leads").select("id,telephone").limit(50000).execute()
-    existing_tels = {r["telephone"]: r["id"] for r in (res.data or []) if r.get("telephone")}
+    # Récupère TOUS les leads existants (paginé) pour détecter les doublons
+    # à la fois par téléphone ET par (nom + ville) pour ceux sans tél.
+    existing_tels: dict[str, int] = {}
+    existing_nv: dict[tuple[str, str], int] = {}  # (nom_lower, ville_lower) -> id
+    start = 0
+    while True:
+        res = sb.table("leads").select("id,telephone,nom,ville").range(
+            start, start + PAGE_SIZE - 1
+        ).execute()
+        rows = res.data or []
+        for r in rows:
+            t = (r.get("telephone") or "").strip()
+            if t:
+                existing_tels[t] = r["id"]
+            nom_l = (r.get("nom") or "").strip().lower()
+            ville_l = (r.get("ville") or "").strip().lower()
+            if nom_l:
+                existing_nv[(nom_l, ville_l)] = r["id"]
+        if len(rows) < PAGE_SIZE:
+            break
+        start += PAGE_SIZE
 
     inserts: list[dict] = []
     updates: list[tuple[int, dict]] = []
     skip = 0
     seen_tels_in_batch: set[str] = set()
+    seen_nv_in_batch: set[tuple[str, str]] = set()
 
     for _, row in df.iterrows():
         nom = _clean_str(row.get("nom"))
@@ -226,6 +295,7 @@ def import_from_excel(df: pd.DataFrame) -> tuple[int, int, int]:
             continue
 
         tel = _clean_str(row.get("telephone"))
+        ville = _clean_str(row.get("ville"))
         type_ = _clean_str(row.get("type")) or "Syndic"
         if type_ not in {"Syndic", "Agence"}:
             type_ = "Syndic"
@@ -234,24 +304,38 @@ def import_from_excel(df: pd.DataFrame) -> tuple[int, int, int]:
             "nom": nom, "type": type_, "telephone": tel,
             "email":       _clean_str(row.get("email")),
             "adresse":     _clean_str(row.get("adresse")),
-            "ville":       _clean_str(row.get("ville")),
+            "ville":       ville,
             "departement": _clean_str(row.get("departement")),
             "source":      _clean_str(row.get("source")),
         }
 
+        nv_key = (nom.lower(), ville.lower())
+
+        # 1. Si on a un tél, c'est notre clé primaire de dédup
         if tel:
-            # Doublon dans le fichier lui-même → on saute
+            # a. Doublon dans le fichier importé lui-même → skip
             if tel in seen_tels_in_batch:
                 skip += 1
                 continue
             seen_tels_in_batch.add(tel)
+            seen_nv_in_batch.add(nv_key)
 
+            # b. Existe déjà en BD → update (préserve les champs CRM)
             if tel in existing_tels:
                 updates.append((existing_tels[tel], payload))
             else:
                 inserts.append(payload)
+            continue
+
+        # 2. Pas de tél → dédup par (nom + ville)
+        if nv_key in seen_nv_in_batch:
+            skip += 1
+            continue
+        seen_nv_in_batch.add(nv_key)
+
+        if nv_key in existing_nv:
+            updates.append((existing_nv[nv_key], payload))
         else:
-            # Pas de tél → on insert quand même (fallback nom + adresse)
             inserts.append(payload)
 
     new_count = 0
