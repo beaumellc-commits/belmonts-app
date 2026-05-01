@@ -175,6 +175,20 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
     outline: none !important;
 }
 
+/* Onglet ACTIF : bord rouge à gauche + fond légèrement teinté + texte blanc */
+[data-testid="stSidebar"] .stButton > button[kind="primary"],
+[data-testid="stSidebar"] .stButton > button[kind="primary"]:focus {
+    background: rgba(204, 32, 32, 0.18) !important;
+    color: #fff !important;
+    border-left: 3px solid #cc2020 !important;
+    font-weight: 500 !important;
+    box-shadow: none !important;
+}
+[data-testid="stSidebar"] .stButton > button[kind="primary"]:hover {
+    background: rgba(204, 32, 32, 0.28) !important;
+    border-left-color: #cc2020 !important;
+}
+
 /* Bouton déconnexion en bas — discret */
 [data-testid="stSidebar"] .sb-logout .stButton > button {
     background: transparent !important;
@@ -429,34 +443,42 @@ def sidebar() -> str:
             </div>
             """, unsafe_allow_html=True)
 
+        # Page actuelle (pour surligner l'onglet actif)
+        current_page = st.session_state.get("page", "a_contacter")
+
         # Section LEADS
         st.markdown('<div class="sb-section">Leads</div>', unsafe_allow_html=True)
 
         for key, label in STATUTS.items():
             count = counts.get(key, 0)
-            color = STATUTS_COLOR.get(key, "#6b7280")
-            # Bouton invisible Streamlit (pour le clic) + label HTML stylé au-dessus
-            cols = st.columns([1])
-            with cols[0]:
-                btn_label = f"{label}  ·  {count}"
-                if st.button(btn_label, key=f"nav_{key}", use_container_width=True):
-                    st.session_state["page"] = key
-                    st.session_state.pop("selected_lead", None)
-                    st.session_state.pop(f"page_num_{key}", None)
-                    st.rerun()
+            btn_label = f"{label}  ·  {count}"
+            is_active = (current_page == key)
+            if st.button(btn_label, key=f"nav_{key}",
+                         use_container_width=True,
+                         type="primary" if is_active else "secondary"):
+                st.session_state["page"] = key
+                st.session_state.pop("selected_lead", None)
+                st.session_state.pop(f"page_num_{key}", None)
+                st.rerun()
 
         # Section OUTILS
         st.markdown('<div class="sb-section">Outils</div>', unsafe_allow_html=True)
 
-        if st.button("Rendez-vous", key="nav_rdv", use_container_width=True):
+        if st.button("Rendez-vous", key="nav_rdv",
+                     use_container_width=True,
+                     type="primary" if current_page == "rdv" else "secondary"):
             st.session_state["page"] = "rdv"
             st.session_state.pop("selected_lead", None)
             st.rerun()
-        if st.button("Statistiques", key="nav_stats", use_container_width=True):
+        if st.button("Statistiques", key="nav_stats",
+                     use_container_width=True,
+                     type="primary" if current_page == "stats" else "secondary"):
             st.session_state["page"] = "stats"
             st.rerun()
         if st.session_state.get("user") == "admin":
-            if st.button("Importer des leads", key="nav_import", use_container_width=True):
+            if st.button("Importer des leads", key="nav_import",
+                         use_container_width=True,
+                         type="primary" if current_page == "import" else "secondary"):
                 st.session_state["page"] = "import"
                 st.rerun()
 
