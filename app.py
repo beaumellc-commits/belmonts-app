@@ -357,6 +357,55 @@ def _safe(fn, *args, success: str | None = None,
         return False
 
 
+def _inject_mobile_sidebar_autoclose() -> None:
+    """
+    Sur mobile (largeur < 992px), referme automatiquement la sidebar quand
+    l'utilisateur clique sur un bouton de navigation. Évite que le menu reste
+    ouvert et cache le contenu après une sélection.
+    """
+    import streamlit.components.v1 as components
+    components.html("""
+    <script>
+    (function() {
+        try {
+            const w = window.parent || window;
+            const d = w.document;
+            const isMobile = () => w.innerWidth < 992;
+
+            const closeSidebar = () => {
+                if (!isMobile()) return;
+                const closeBtn =
+                    d.querySelector('[data-testid="stSidebarCollapseButton"]') ||
+                    d.querySelector('[aria-label="Close sidebar"]') ||
+                    d.querySelector('[data-testid="stSidebarHeader"] button');
+                if (closeBtn) closeBtn.click();
+            };
+
+            const attach = () => {
+                const buttons = d.querySelectorAll(
+                    '[data-testid="stSidebar"] button:not([data-belmonts-autoclose])'
+                );
+                buttons.forEach(btn => {
+                    btn.setAttribute('data-belmonts-autoclose', '1');
+                    btn.addEventListener('click', () => {
+                        // Pas de fermeture pour le bouton "Se déconnecter"
+                        const txt = (btn.textContent || '').toLowerCase();
+                        if (txt.includes('déconnect') || txt.includes('deconnect')) return;
+                        // Délai pour laisser Streamlit traiter le clic
+                        setTimeout(closeSidebar, 350);
+                    });
+                });
+            };
+
+            attach();
+            const obs = new MutationObserver(attach);
+            obs.observe(d.body, { childList: true, subtree: true });
+        } catch (e) { /* silencieux */ }
+    })();
+    </script>
+    """, height=0)
+
+
 def show_splash(message: str = "Chargement…"):
     """Affiche un overlay plein écran avec le logo Belmonts et une barre de progression.
     Retourne le placeholder st.empty() qu'on peut .empty() plus tard pour le retirer."""
@@ -1811,6 +1860,9 @@ encodage Latin-1).
 def main() -> None:
     # Tente de restaurer la session depuis le token URL (survit au refresh)
     _restore_session_from_url()
+
+    # Auto-collapse de la sidebar sur mobile après navigation
+    _inject_mobile_sidebar_autoclose()
 
     if "user" not in st.session_state:
         login()
