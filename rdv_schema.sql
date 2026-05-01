@@ -40,11 +40,20 @@ CREATE INDEX IF NOT EXISTS idx_rdv_assigne  ON rendez_vous(assigne_a);
 CREATE INDEX IF NOT EXISTS idx_rdv_statut   ON rendez_vous(statut);
 
 -- Trigger : maj auto de modifie_le à chaque UPDATE
+-- (fonction dédiée car la table `leads` a 'date_modification' mais ici c'est 'modifie_le')
+CREATE OR REPLACE FUNCTION trigger_set_modifie_le()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.modifie_le = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
 DROP TRIGGER IF EXISTS rdv_set_modification ON rendez_vous;
 CREATE TRIGGER rdv_set_modification
     BEFORE UPDATE ON rendez_vous
     FOR EACH ROW
-    EXECUTE FUNCTION trigger_set_modification();
+    EXECUTE FUNCTION trigger_set_modifie_le();
 
 -- RLS activée. La clé service_role bypass automatiquement.
 ALTER TABLE rendez_vous ENABLE ROW LEVEL SECURITY;
