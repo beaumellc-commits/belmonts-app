@@ -14,9 +14,10 @@ import streamlit as st
 
 from db import (
     STATUTS, STATUTS_COLOR, STATUTS_RDV, TYPES_RDV,
-    create_rdv, delete_rdv, fetch_lead, fetch_leads, fetch_rdvs,
+    add_rdv_contact, create_rdv, delete_rdv, delete_rdv_contact,
+    fetch_contacts_for_rdv, fetch_lead, fetch_leads, fetch_rdvs,
     fetch_rdvs_for_lead, fetch_villes, get_counts, get_stats,
-    import_from_excel, update_lead, update_rdv,
+    import_from_excel, update_lead, update_rdv, update_rdv_contact,
 )
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
@@ -503,6 +504,29 @@ def page_leads(statut: str) -> None:
                     st.session_state["selected_lead"] = lead_id
                     st.rerun()
 
+    # Pagination en BAS de la liste (utile quand on a scrollé jusqu'en bas)
+    if total_pages > 1:
+        st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
+        bp1, bp2, bp3 = st.columns([1, 2, 1])
+        with bp1:
+            if st.button("← Précédent", key=f"prev_bottom_{statut}",
+                         disabled=st.session_state[page_key] == 0,
+                         use_container_width=True):
+                st.session_state[page_key] -= 1
+                st.rerun()
+        with bp2:
+            st.markdown(
+                f"<div style='text-align:center; padding-top:8px; color:#666; font-size:13px;'>"
+                f"Page <strong>{st.session_state[page_key] + 1}</strong> / {total_pages}</div>",
+                unsafe_allow_html=True,
+            )
+        with bp3:
+            if st.button("Suivant →", key=f"next_bottom_{statut}",
+                         disabled=st.session_state[page_key] >= total_pages - 1,
+                         use_container_width=True):
+                st.session_state[page_key] += 1
+                st.rerun()
+
 
 # ─── DÉTAIL D'UN LEAD ─────────────────────────────────────────────────────────
 def render_lead_detail(lead_id: int) -> None:
@@ -768,6 +792,9 @@ def _render_rdv_card(rdv: dict, user: str, expanded: bool = False) -> None:
                              value=rdv.get("lieu") or "",
                              key=f"lieu_{rdv_id}")
 
+        # Contacts rencontrés sur place (sous-CRM mini)
+        _render_contacts_section(rdv_id, statut_key)
+
         # Métadonnées
         cree_par = rdv.get("cree_par", "")
         cree_le = _parse_rdv_dt(rdv.get("cree_le"))
@@ -838,6 +865,107 @@ def _render_rdv_card(rdv: dict, user: str, expanded: bool = False) -> None:
                              use_container_width=True):
                     update_rdv(rdv_id, {"statut": "a_venir"})
                     st.rerun()
+
+
+# ─── CONTACTS RENCONTRÉS (sous-section d'un RDV) ─────────────────────────────
+def _render_contacts_section(rdv_id: int, statut_key: str) -> None:
+    contacts = fetch_contacts_for_rdv(rdv_id)
+    n = len(contacts)
+
+    st.markdown(f"##### 👥 Contacts rencontrés ({n})")
+
+    # Liste des contacts existants (chaque contact = container éditable)
+    for ct in contacts:
+        ct_id = int(ct["id"])
+        with st.container(border=True):
+            cc1, cc2 = st.columns([6, 1])
+            with cc1:
+                cn1, cn2 = st.columns(2)
+                with cn1:
+                    nom = st.text_input(
+                        "Nom",
+                        value=ct.get("nom", ""),
+                        key=f"ct_nom_{ct_id}",
+                        placeholder="ex : M. Dupont",
+                    )
+                    poste = st.text_input(
+                        "Poste / fonction",
+                        value=ct.get("poste", ""),
+                        key=f"ct_poste_{ct_id}",
+                        placeholder="ex : Directeur, Comptable, Gardien",
+                    )
+                with cn2:
+                    tel = st.text_input(
+                        "Téléphone",
+                        value=ct.get("telephone", ""),
+                        key=f"ct_tel_{ct_id}",
+                        placeholder="06 12 34 56 78",
+                    )
+                    email = st.text_input(
+                        "Email",
+                        value=ct.get("email", ""),
+                        key=f"ct_email_{ct_id}",
+                        placeholder="contact@entreprise.fr",
+                    )
+                notes = st.text_input(
+                    "Notes",
+                    value=ct.get("notes", ""),
+                    key=f"ct_notes_{ct_id}",
+                    placeholder="ex : Décisionnaire, à recontacter pour devis",
+                )
+            with cc2:
+                st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+                if st.button("💾", key=f"save_ct_{ct_id}",
+                             help="Enregistrer ce contact",
+                             use_container_width=True):
+                    update_rdv_contact(ct_id, {
+                        "nom": nom, "poste": poste, "telephone": tel,
+                        "email": email, "notes": notes,
+                    })
+                    st.toast("Contact mis à jour ✅")
+                    st.rerun()
+                if st.button("🗑", key=f"del_ct_{ct_id}",
+                             help="Supprimer ce contact",
+                             use_container_width=True):
+                    delete_rdv_contact(ct_id)
+                    st.rerun()
+
+    if not contacts:
+        st.caption("Aucun contact rencontré enregistré pour ce RDV.")
+
+    # Formulaire pour ajouter un nouveau contact
+    with st.form(f"new_contact_form_{rdv_id}", clear_on_submit=True):
+        st.markdown("**➕ Ajouter un contact rencontré**")
+        nc1, nc2 = st.columns(2)
+        with nc1:
+            new_nom = st.text_input("Nom *", key=f"new_ct_nom_{rdv_id}",
+                                    placeholder="ex : Mme Martin")
+            new_poste = st.text_input(
+                "Poste / fonction",
+                key=f"new_ct_poste_{rdv_id}",
+                placeholder="ex : Directrice, Gestionnaire de patrimoine",
+            )
+        with nc2:
+            new_tel = st.text_input("Téléphone", key=f"new_ct_tel_{rdv_id}",
+                                    placeholder="06 12 34 56 78")
+            new_email = st.text_input("Email", key=f"new_ct_email_{rdv_id}",
+                                      placeholder="contact@entreprise.fr")
+        new_notes = st.text_input(
+            "Notes (optionnel)",
+            key=f"new_ct_notes_{rdv_id}",
+            placeholder="ex : Décisionnaire, demande devis ravalement façade",
+        )
+        if st.form_submit_button("➕ Ajouter ce contact"):
+            if not (new_nom or "").strip():
+                st.error("Le nom du contact est requis.")
+            else:
+                add_rdv_contact(rdv_id, {
+                    "nom": new_nom, "poste": new_poste,
+                    "telephone": new_tel, "email": new_email,
+                    "notes": new_notes,
+                })
+                st.toast("Contact ajouté ✅")
+                st.rerun()
 
 
 # ─── PAGE: RENDEZ-VOUS (vue globale) ─────────────────────────────────────────

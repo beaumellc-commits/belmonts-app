@@ -48,3 +48,25 @@ CREATE TRIGGER rdv_set_modification
 
 -- RLS activée. La clé service_role bypass automatiquement.
 ALTER TABLE rendez_vous ENABLE ROW LEVEL SECURITY;
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Table des CONTACTS rencontrés pendant un RDV
+-- (un RDV peut avoir plusieurs contacts : directeur, comptable, gestionnaire…)
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS rdv_contacts (
+    id          BIGSERIAL PRIMARY KEY,
+    rdv_id      BIGINT      NOT NULL REFERENCES rendez_vous(id) ON DELETE CASCADE,
+
+    nom         TEXT        NOT NULL,
+    poste       TEXT        DEFAULT '',  -- ex : Directeur, Comptable, Gardien
+    telephone   TEXT        DEFAULT '',
+    email       TEXT        DEFAULT '',
+    notes       TEXT        DEFAULT '',  -- ex : Décisionnaire, à recontacter pour devis
+
+    cree_le     TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_rdv_contacts_rdv ON rdv_contacts(rdv_id);
+
+ALTER TABLE rdv_contacts ENABLE ROW LEVEL SECURITY;

@@ -453,3 +453,46 @@ def delete_rdv(rdv_id: int) -> None:
     sb = _client()
     sb.table("rendez_vous").delete().eq("id", rdv_id).execute()
     _invalidate_rdv_cache()
+
+
+# ─── CONTACTS RENCONTRÉS PENDANT UN RDV ───────────────────────────────────────
+@st.cache_data(ttl=20, show_spinner=False)
+def fetch_contacts_for_rdv(rdv_id: int) -> list[dict[str, Any]]:
+    """Liste les contacts rencontrés pendant un RDV donné, par ordre d'ajout."""
+    sb = _client()
+    res = (sb.table("rdv_contacts").select("*")
+             .eq("rdv_id", rdv_id)
+             .order("cree_le")
+             .execute())
+    return res.data or []
+
+
+def add_rdv_contact(rdv_id: int, data: dict[str, Any]) -> dict | None:
+    sb = _client()
+    payload = {
+        "rdv_id":    rdv_id,
+        "nom":       (data.get("nom") or "").strip(),
+        "poste":     (data.get("poste") or "").strip(),
+        "telephone": (data.get("telephone") or "").strip(),
+        "email":     (data.get("email") or "").strip(),
+        "notes":     (data.get("notes") or "").strip(),
+    }
+    if not payload["nom"]:
+        return None
+    res = sb.table("rdv_contacts").insert(payload).execute()
+    fetch_contacts_for_rdv.clear()
+    return res.data[0] if res.data else None
+
+
+def update_rdv_contact(contact_id: int, updates: dict[str, Any]) -> None:
+    sb = _client()
+    forbidden = {"id", "rdv_id", "cree_le"}
+    payload = {k: v for k, v in updates.items() if k not in forbidden}
+    sb.table("rdv_contacts").update(payload).eq("id", contact_id).execute()
+    fetch_contacts_for_rdv.clear()
+
+
+def delete_rdv_contact(contact_id: int) -> None:
+    sb = _client()
+    sb.table("rdv_contacts").delete().eq("id", contact_id).execute()
+    fetch_contacts_for_rdv.clear()
