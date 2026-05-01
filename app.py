@@ -7,14 +7,16 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time as dtime, timedelta
 
 import pandas as pd
 import streamlit as st
 
 from db import (
-    STATUTS, STATUTS_COLOR, fetch_lead, fetch_leads, fetch_villes,
-    get_counts, get_stats, import_from_excel, update_lead,
+    STATUTS, STATUTS_COLOR, STATUTS_RDV, TYPES_RDV,
+    create_rdv, delete_rdv, fetch_lead, fetch_leads, fetch_rdvs,
+    fetch_rdvs_for_lead, fetch_villes, get_counts, get_stats,
+    import_from_excel, update_lead, update_rdv,
 )
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
@@ -316,6 +318,10 @@ def sidebar() -> str:
         # Section OUTILS
         st.markdown('<div class="sb-section">Outils</div>', unsafe_allow_html=True)
 
+        if st.button("Rendez-vous", key="nav_rdv", use_container_width=True):
+            st.session_state["page"] = "rdv"
+            st.session_state.pop("selected_lead", None)
+            st.rerun()
         if st.button("Statistiques", key="nav_stats", use_container_width=True):
             st.session_state["page"] = "stats"
             st.rerun()
@@ -578,6 +584,11 @@ def render_lead_detail(lead_id: int) -> None:
             except Exception:
                 st.caption(f"📅 Dernier contact : {last_contact} par {last_user or '—'}")
 
+        # Section Rendez-vous (briefing bureau ↔ compte-rendu terrain)
+        st.markdown("---")
+        _render_rdv_section(lead_id, lead, user)
+        st.markdown("---")
+
         # Actions
         ac1, ac2, ac3, ac4 = st.columns(4)
         with ac1:
@@ -609,6 +620,343 @@ def render_lead_detail(lead_id: int) -> None:
                                       "telephone_alt": tel_alt, "email": email}, user)
                 st.session_state.pop("selected_lead", None)
                 st.rerun()
+
+
+# ─── SECTION RDV (dans la fiche d'un lead) ───────────────────────────────────
+def _parse_rdv_dt(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _render_rdv_section(lead_id: int, lead: dict, user: str) -> None:
+    rdvs = fetch_rdvs_for_lead(lead_id)
+    upcoming = [r for r in rdvs if r.get("statut") == "a_venir"]
+    history = [r for r in rdvs if r.get("statut") != "a_venir"]
+    n_upcoming = len(upcoming)
+
+    label = f"📅 **Rendez-vous** ({len(rdvs)})"
+    if n_upcoming:
+        label += f"   ·  {n_upcoming} à venir"
+    st.markdown(label)
+
+    # Form de création
+    with st.expander("➕ Planifier un nouveau rendez-vous", expanded=(len(rdvs) == 0)):
+        with st.form(f"create_rdv_{lead_id}", clear_on_submit=True):
+            c1, c2 = st.columns(2)
+            with c1:
+                d = st.date_input("Date du RDV",
+                                  value=date.today() + timedelta(days=7),
+                                  key=f"new_rdv_d_{lead_id}")
+                h = st.time_input("Heure",
+                                  value=dtime(14, 0),
+                                  key=f"new_rdv_h_{lead_id}",
+                                  step=timedelta(minutes=15))
+                duree = st.selectbox("Durée prévue",
+                                     [30, 45, 60, 90, 120],
+                                     index=2,
+                                     format_func=lambda m: f"{m} min",
+                                     key=f"new_rdv_duree_{lead_id}")
+            with c2:
+                type_keys = list(TYPES_RDV.keys())
+                type_rdv = st.selectbox("Type",
+                                        type_keys,
+                                        format_func=lambda k: TYPES_RDV[k],
+                                        key=f"new_rdv_type_{lead_id}")
+                users_list = list(get_users().keys())
+                default_idx = users_list.index(user) if user in users_list else 0
+                assigne = st.selectbox("Assigné à (commercial terrain)",
+                                       users_list,
+                                       index=default_idx,
+                                       key=f"new_rdv_assigne_{lead_id}")
+            lieu = st.text_input("Lieu",
+                                 value=lead.get("adresse") or "",
+                                 placeholder="Adresse du RDV",
+                                 key=f"new_rdv_lieu_{lead_id}")
+            briefing = st.text_area(
+                "📋 Briefing pour le commercial terrain",
+                placeholder="Contexte du syndic, contact à demander, "
+                            "points clés à aborder, attentes du client...",
+                height=120,
+                key=f"new_rdv_brief_{lead_id}",
+            )
+            submitted = st.form_submit_button("📅 Créer le rendez-vous",
+                                              use_container_width=False)
+            if submitted:
+                dt = datetime.combine(d, h)
+                created = create_rdv(lead_id, {
+                    "date_rdv":  dt.isoformat(),
+                    "duree_min": int(duree),
+                    "type":      type_rdv,
+                    "lieu":      lieu,
+                    "assigne_a": assigne,
+                    "briefing":  briefing,
+                }, user)
+                if created:
+                    st.success(f"✅ RDV créé pour le {dt:%d/%m/%Y à %H:%M}")
+                    st.rerun()
+                else:
+                    st.error("Erreur à la création du RDV.")
+
+    if not rdvs:
+        return
+
+    # RDVs à venir
+    if upcoming:
+        st.markdown("##### À venir")
+        for rdv in upcoming:
+            _render_rdv_card(rdv, user, expanded=True)
+
+    # Historique (terminé / annulé / reporté)
+    if history:
+        st.markdown("##### Historique")
+        for rdv in history:
+            _render_rdv_card(rdv, user, expanded=False)
+
+
+def _render_rdv_card(rdv: dict, user: str, expanded: bool = False) -> None:
+    rdv_id = int(rdv["id"])
+    dt = _parse_rdv_dt(rdv.get("date_rdv"))
+    statut_key = rdv.get("statut") or "a_venir"
+    type_label = TYPES_RDV.get(rdv.get("type") or "physique", rdv.get("type", ""))
+
+    statut_dot = {
+        "a_venir":  "🟢",
+        "termine":  "✓",
+        "annule":   "✗",
+        "reporte":  "⏸",
+    }.get(statut_key, "•")
+
+    when = f"{dt:%a %d/%m %H:%M}" if dt else "?"
+    title = (
+        f"{statut_dot} **{when}**  ·  {type_label}  ·  "
+        f"Assigné à **{rdv.get('assigne_a') or '—'}**  "
+        f"·  *{STATUTS_RDV.get(statut_key, statut_key)}*"
+    )
+
+    with st.expander(title, expanded=expanded):
+        # Briefing (préparation par le bureau)
+        briefing = st.text_area(
+            "📋 Briefing (rédigé par le bureau)",
+            value=rdv.get("briefing") or "",
+            key=f"brief_{rdv_id}",
+            height=100,
+        )
+
+        # Compte-rendu (rempli par le terrain après le RDV)
+        compte_rendu = st.text_area(
+            "📝 Compte-rendu (à remplir après le RDV)",
+            value=rdv.get("compte_rendu") or "",
+            placeholder="Notes, contacts rencontrés, accord obtenu, "
+                        "points en suspens, prochaine étape...",
+            key=f"cr_{rdv_id}",
+            height=140,
+        )
+
+        resultat = st.text_input(
+            "🎯 Résultat / suite à donner",
+            value=rdv.get("resultat") or "",
+            placeholder="ex : devis demandé, refus, à rappeler dans 1 mois",
+            key=f"res_{rdv_id}",
+        )
+
+        # Lieu (modifiable)
+        lieu = st.text_input("📍 Lieu",
+                             value=rdv.get("lieu") or "",
+                             key=f"lieu_{rdv_id}")
+
+        # Métadonnées
+        cree_par = rdv.get("cree_par", "")
+        cree_le = _parse_rdv_dt(rdv.get("cree_le"))
+        if cree_par or cree_le:
+            cap = "Créé"
+            if cree_par:
+                cap += f" par **{cree_par}**"
+            if cree_le:
+                cap += f" le {cree_le:%d/%m/%Y à %H:%M}"
+            st.caption(cap)
+
+        # Actions selon le statut
+        if statut_key == "a_venir":
+            b1, b2, b3, b4, b5 = st.columns(5)
+            with b1:
+                if st.button("💾 Enregistrer", key=f"save_rdv_{rdv_id}",
+                             use_container_width=True):
+                    update_rdv(rdv_id, {
+                        "briefing": briefing,
+                        "compte_rendu": compte_rendu,
+                        "resultat": resultat,
+                        "lieu": lieu,
+                    })
+                    st.success("Sauvegardé")
+                    st.rerun()
+            with b2:
+                if st.button("✅ Marquer terminé", key=f"done_rdv_{rdv_id}",
+                             use_container_width=True):
+                    update_rdv(rdv_id, {
+                        "statut": "termine",
+                        "briefing": briefing,
+                        "compte_rendu": compte_rendu,
+                        "resultat": resultat,
+                        "lieu": lieu,
+                    })
+                    st.toast("RDV marqué terminé ✅")
+                    st.rerun()
+            with b3:
+                if st.button("⏸ Reporter", key=f"postpone_rdv_{rdv_id}",
+                             use_container_width=True):
+                    update_rdv(rdv_id, {"statut": "reporte"})
+                    st.rerun()
+            with b4:
+                if st.button("✗ Annuler", key=f"cancel_rdv_{rdv_id}",
+                             use_container_width=True):
+                    update_rdv(rdv_id, {"statut": "annule"})
+                    st.rerun()
+            with b5:
+                if st.button("🗑 Supprimer", key=f"del_rdv_{rdv_id}",
+                             use_container_width=True):
+                    delete_rdv(rdv_id)
+                    st.rerun()
+        else:
+            b1, b2 = st.columns([1, 1])
+            with b1:
+                if st.button("💾 Sauvegarder le compte-rendu",
+                             key=f"save_rdv_{rdv_id}",
+                             use_container_width=True):
+                    update_rdv(rdv_id, {
+                        "compte_rendu": compte_rendu,
+                        "resultat": resultat,
+                    })
+                    st.success("Compte-rendu sauvegardé")
+                    st.rerun()
+            with b2:
+                if st.button("↻ Re-passer en « à venir »",
+                             key=f"reopen_rdv_{rdv_id}",
+                             use_container_width=True):
+                    update_rdv(rdv_id, {"statut": "a_venir"})
+                    st.rerun()
+
+
+# ─── PAGE: RENDEZ-VOUS (vue globale) ─────────────────────────────────────────
+def page_rdv() -> None:
+    header("Rendez-vous", "Suivi des RDV terrain")
+
+    user = st.session_state.get("user", "")
+
+    # Filtres
+    f1, f2, f3, f4 = st.columns([1.5, 1.5, 1.5, 1])
+    with f1:
+        scope = st.selectbox("Visibilité", ["Mes RDV", "Tous les RDV"],
+                             key="rdv_scope")
+    with f2:
+        statut_keys = ["Tous"] + list(STATUTS_RDV.keys())
+        statut_f = st.selectbox(
+            "Statut",
+            statut_keys,
+            format_func=lambda k: STATUTS_RDV.get(k, "Tous"),
+            key="rdv_statut_filter",
+        )
+    with f3:
+        period = st.selectbox(
+            "Période",
+            ["À venir (7 jours)", "Aujourd'hui", "Cette semaine",
+             "Ce mois", "Tout"],
+            key="rdv_period",
+        )
+    with f4:
+        st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+        if st.button("Actualiser", key="rdv_refresh", use_container_width=True):
+            st.rerun()
+
+    # Calcule les bornes de date selon la période
+    today = date.today()
+    date_min: str | None = None
+    date_max: str | None = None
+    if period == "Aujourd'hui":
+        date_min = today.isoformat()
+        date_max = (today + timedelta(days=1)).isoformat()
+    elif period == "Cette semaine":
+        start_w = today - timedelta(days=today.weekday())
+        end_w = start_w + timedelta(days=7)
+        date_min = start_w.isoformat()
+        date_max = end_w.isoformat()
+    elif period == "Ce mois":
+        first = today.replace(day=1)
+        if first.month == 12:
+            next_first = first.replace(year=first.year + 1, month=1)
+        else:
+            next_first = first.replace(month=first.month + 1)
+        date_min = first.isoformat()
+        date_max = next_first.isoformat()
+    elif period == "À venir (7 jours)":
+        date_min = today.isoformat()
+        date_max = (today + timedelta(days=7)).isoformat()
+
+    rdvs = fetch_rdvs(
+        assigne_a=user if scope == "Mes RDV" else None,
+        statut=statut_f if statut_f != "Tous" else None,
+        date_min=date_min,
+        date_max=date_max,
+    )
+
+    st.markdown(
+        f"<div style='font-size:13px; color:#666; margin: 0.75rem 0 1rem;'>"
+        f"<strong>{len(rdvs)}</strong> rendez-vous</div>",
+        unsafe_allow_html=True,
+    )
+
+    if not rdvs:
+        st.info("Aucun rendez-vous avec ces filtres.")
+        return
+
+    for rdv in rdvs:
+        lead_data = rdv.get("leads") or {}
+        dt = _parse_rdv_dt(rdv.get("date_rdv"))
+        statut_key = rdv.get("statut") or "a_venir"
+        statut_dot = {
+            "a_venir": "🟢", "termine": "✓",
+            "annule": "✗", "reporte": "⏸",
+        }.get(statut_key, "•")
+        type_label = TYPES_RDV.get(rdv.get("type") or "physique", "")
+
+        with st.container(border=True):
+            c1, c2, c3, c4 = st.columns([3.2, 2.8, 2, 1])
+
+            with c1:
+                st.markdown(f"**{lead_data.get('nom') or '—'}**")
+                st.caption(
+                    f"{lead_data.get('type') or ''} — "
+                    f"{lead_data.get('ville') or '?'} "
+                    f"({lead_data.get('departement') or '?'})"
+                )
+                if lead_data.get("adresse"):
+                    st.caption(f"📍 {lead_data['adresse']}")
+
+            with c2:
+                if dt:
+                    st.markdown(f"**{statut_dot} {dt:%a %d/%m %H:%M}**")
+                else:
+                    st.markdown(f"{statut_dot} ?")
+                st.caption(f"{type_label} · {rdv.get('duree_min', 60)} min")
+                if rdv.get("lieu"):
+                    st.caption(f"📍 {rdv['lieu']}")
+
+            with c3:
+                st.markdown(
+                    f"Assigné à : **{rdv.get('assigne_a') or '—'}**"
+                )
+                if lead_data.get("telephone"):
+                    st.caption(f"📞 {lead_data['telephone']}")
+
+            with c4:
+                if st.button("Ouvrir →", key=f"go_lead_{rdv['id']}",
+                             use_container_width=True):
+                    st.session_state["page"] = "a_contacter"
+                    st.session_state["selected_lead"] = int(rdv["lead_id"])
+                    st.rerun()
 
 
 # ─── PAGE: STATISTIQUES ───────────────────────────────────────────────────────
@@ -714,6 +1062,8 @@ def main() -> None:
     page = sidebar()
     if page in STATUTS:
         page_leads(page)
+    elif page == "rdv":
+        page_rdv()
     elif page == "stats":
         page_stats()
     elif page == "import":

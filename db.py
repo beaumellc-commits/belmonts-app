@@ -30,6 +30,20 @@ STATUTS_COLOR: dict[str, str] = {
     "refus":         "#6b7280",  # gris (perdu, désaccentué)
 }
 
+# Statuts RDV
+STATUTS_RDV: dict[str, str] = {
+    "a_venir":  "À venir",
+    "termine":  "Terminé",
+    "reporte":  "Reporté",
+    "annule":   "Annulé",
+}
+
+TYPES_RDV: dict[str, str] = {
+    "physique":  "Physique (sur place)",
+    "visio":     "Visio",
+    "telephone": "Téléphone",
+}
+
 
 def _get_secret(key: str) -> str | None:
     """Lit un secret. Priorité env vars (Render) puis st.secrets (Streamlit Cloud)."""
@@ -355,3 +369,87 @@ def import_from_excel(df: pd.DataFrame) -> tuple[int, int, int]:
 
     invalidate_cache()
     return new_count, update_count, skip
+
+
+# ─── RENDEZ-VOUS ──────────────────────────────────────────────────────────────
+def _invalidate_rdv_cache() -> None:
+    fetch_rdvs_for_lead.clear()
+    fetch_rdvs.clear()
+
+
+@st.cache_data(ttl=20, show_spinner=False)
+def fetch_rdvs_for_lead(lead_id: int) -> list[dict[str, Any]]:
+    """Tous les RDV d'un lead, du plus récent au plus ancien."""
+    sb = _client()
+    res = (sb.table("rendez_vous").select("*")
+             .eq("lead_id", lead_id)
+             .order("date_rdv", desc=True)
+             .execute())
+    return res.data or []
+
+
+@st.cache_data(ttl=20, show_spinner=False)
+def fetch_rdvs(
+    assigne_a: str | None = None,
+    statut: str | None = None,
+    date_min: str | None = None,
+    date_max: str | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Liste des RDV avec leur lead joint (nom, tél, ville, adresse).
+    Triée par date croissante (les prochains en premier).
+    """
+    sb = _client()
+    all_rows: list[dict] = []
+    start = 0
+    while True:
+        q = sb.table("rendez_vous").select(
+            "*, leads(nom, telephone, ville, departement, adresse, type)"
+        )
+        if assigne_a:
+            q = q.eq("assigne_a", assigne_a)
+        if statut:
+            q = q.eq("statut", statut)
+        if date_min:
+            q = q.gte("date_rdv", date_min)
+        if date_max:
+            q = q.lte("date_rdv", date_max)
+        res = q.order("date_rdv").range(start, start + PAGE_SIZE - 1).execute()
+        rows = res.data or []
+        all_rows.extend(rows)
+        if len(rows) < PAGE_SIZE:
+            break
+        start += PAGE_SIZE
+    return all_rows
+
+
+def create_rdv(lead_id: int, data: dict[str, Any], user: str) -> dict | None:
+    sb = _client()
+    payload = {
+        "lead_id":   lead_id,
+        "date_rdv":  data["date_rdv"],
+        "duree_min": data.get("duree_min", 60),
+        "type":      data.get("type", "physique"),
+        "lieu":      data.get("lieu", ""),
+        "assigne_a": data.get("assigne_a", user),
+        "briefing":  data.get("briefing", ""),
+        "statut":    "a_venir",
+        "cree_par":  user,
+    }
+    res = sb.table("rendez_vous").insert(payload).execute()
+    _invalidate_rdv_cache()
+    return res.data[0] if res.data else None
+
+
+def update_rdv(rdv_id: int, updates: dict[str, Any]) -> None:
+    sb = _client()
+    forbidden = {"id", "lead_id", "cree_par", "cree_le", "modifie_le"}
+    payload = {k: v for k, v in updates.items() if k not in forbidden}
+    sb.table("rendez_vous").update(payload).eq("id", rdv_id).execute()
+    _invalidate_rdv_cache()
+
+
+def delete_rdv(rdv_id: int) -> None:
+    sb = _client()
+    sb.table("rendez_vous").delete().eq("id", rdv_id).execute()
+    _invalidate_rdv_cache()
