@@ -15,9 +15,9 @@ import streamlit as st
 from db import (
     STATUTS, STATUTS_COLOR, STATUTS_RDV, TYPES_RDV,
     add_rdv_contact, create_rdv, delete_lead, delete_rdv, delete_rdv_contact,
-    fetch_contacts_for_rdv, fetch_lead, fetch_leads, fetch_rdvs,
-    fetch_rdvs_for_lead, fetch_villes, get_counts, get_stats,
-    import_from_excel, update_lead, update_rdv, update_rdv_contact,
+    fetch_contacts_for_rdv, fetch_lead, fetch_leads_page, fetch_rdvs,
+    fetch_rdvs_for_lead, fetch_villes, get_counts, get_leads_count,
+    get_stats, import_from_excel, update_lead, update_rdv, update_rdv_contact,
 )
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
@@ -402,21 +402,25 @@ def page_leads(statut: str) -> None:
                      use_container_width=True):
             st.rerun()
 
-    df = fetch_leads(
-        statut=statut,
-        departement=dept if dept != "Tous" else None,
-        ville=ville if ville != "Toutes" else None,
-        type_prospect=type_p if type_p != "Tous" else None,
-        search=search if search else None,
+    # Filtres normalisés (None pour les valeurs « Tous/Toutes »)
+    f_dept = dept if dept != "Tous" else None
+    f_ville = ville if ville != "Toutes" else None
+    f_type = type_p if type_p != "Tous" else None
+    f_search = search if search else None
+
+    # Compteur ULTRA rapide (1 requête HEAD au lieu de fetch toutes les lignes)
+    total = get_leads_count(
+        statut=statut, departement=f_dept, ville=f_ville,
+        type_prospect=f_type, search=f_search,
     )
 
     st.markdown(
         f"<div style='font-size:13px; color:#666; margin: 0.75rem 0 1rem;'>"
-        f"<strong>{len(df)}</strong> lead(s) trouvé(s)</div>",
+        f"<strong>{total}</strong> lead(s) trouvé(s)</div>",
         unsafe_allow_html=True,
     )
 
-    if df.empty:
+    if total == 0:
         st.info("Aucun lead avec ces filtres.")
         return
 
@@ -430,7 +434,7 @@ def page_leads(statut: str) -> None:
     page_key = f"page_num_{statut}"
     if page_key not in st.session_state:
         st.session_state[page_key] = 0
-    total_pages = max(1, (len(df) - 1) // PAGE_SIZE + 1)
+    total_pages = max(1, (total - 1) // PAGE_SIZE + 1)
     st.session_state[page_key] = min(st.session_state[page_key], total_pages - 1)
 
     pc1, pc2, pc3 = st.columns([1, 2, 1])
@@ -453,9 +457,13 @@ def page_leads(statut: str) -> None:
             st.session_state[page_key] += 1
             st.rerun()
 
-    start = st.session_state[page_key] * PAGE_SIZE
-    end = start + PAGE_SIZE
-    page_df = df.iloc[start:end]
+    # Charge UNIQUEMENT la page courante (25 lignes) — gros gain de perf
+    page_df = fetch_leads_page(
+        page_num=st.session_state[page_key],
+        page_size=PAGE_SIZE,
+        statut=statut, departement=f_dept, ville=f_ville,
+        type_prospect=f_type, search=f_search,
+    )
 
     # Affichage compact avec changement de statut inline (auto-save)
     user = st.session_state.get("user", "")

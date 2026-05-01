@@ -72,9 +72,9 @@ def _client():
 
 
 # ─── LECTURE ──────────────────────────────────────────────────────────────────
-# Note : Supabase/PostgREST renvoie max 1000 lignes par requête. On pagine via
-# `.range(start, end)` pour récupérer plus de 1000 leads.
-PAGE_SIZE = 1000
+# Note : Supabase/PostgREST renvoie max 1000 lignes par requête. Plutôt que de
+# paginer pour tout charger, on charge UNIQUEMENT la page demandée + le COUNT.
+PAGE_SIZE = 1000  # taille de chunk pour les rares fetch « complet »
 
 
 def _build_leads_query(
@@ -84,9 +84,15 @@ def _build_leads_query(
     type_prospect: str | None,
     search: str | None,
     columns: str,
+    *,
+    head: bool = False,
+    count: str | None = None,
 ):
     sb = _client()
-    q = sb.table("leads").select(columns)
+    if count:
+        q = sb.table("leads").select(columns, count=count, head=head)
+    else:
+        q = sb.table("leads").select(columns)
     if statut:
         q = q.eq("statut", statut)
     if departement:
@@ -101,6 +107,41 @@ def _build_leads_query(
 
 
 @st.cache_data(ttl=30, show_spinner=False)
+def get_leads_count(
+    statut: str | None = None,
+    departement: str | None = None,
+    ville: str | None = None,
+    type_prospect: str | None = None,
+    search: str | None = None,
+) -> int:
+    """Compte les leads correspondant aux filtres — UNE seule requête, ~150 ms."""
+    q = _build_leads_query(statut, departement, ville, type_prospect, search,
+                           "id", head=True, count="exact")
+    res = q.execute()
+    return res.count or 0
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def fetch_leads_page(
+    page_num: int = 0,
+    page_size: int = 25,
+    statut: str | None = None,
+    departement: str | None = None,
+    ville: str | None = None,
+    type_prospect: str | None = None,
+    search: str | None = None,
+) -> pd.DataFrame:
+    """Récupère UNIQUEMENT la page demandée (25 lignes par défaut, ultra rapide)."""
+    q = _build_leads_query(statut, departement, ville, type_prospect, search, "*")
+    start = page_num * page_size
+    end = start + page_size - 1
+    res = q.order("date_modification", desc=True).range(start, end).execute()
+    return pd.DataFrame(res.data or [])
+
+
+# Compatibilité : si du code appelle encore fetch_leads (pour export par ex),
+# on le garde mais avec un warning de perf.
+@st.cache_data(ttl=30, show_spinner=False)
 def fetch_leads(
     statut: str | None = None,
     departement: str | None = None,
@@ -109,7 +150,8 @@ def fetch_leads(
     search: str | None = None,
     limit: int = 50000,
 ) -> pd.DataFrame:
-    """Récupère tous les leads (paginé). Limit max conseillée : 50 000."""
+    """[Lent] Récupère TOUS les leads — réservé aux exports ou usages
+    qui ont vraiment besoin de tout. Pour l'affichage, utiliser fetch_leads_page."""
     all_rows: list[dict] = []
     start = 0
     while len(all_rows) < limit:
@@ -132,17 +174,30 @@ def _ville_sort_key(v: str) -> tuple[int, Any]:
     return (1, (v or "").lower())
 
 
-@st.cache_data(ttl=120, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False)
 def fetch_villes(departement: str | None = None) -> list[str]:
     """
-    Retourne la liste triée des villes/arrondissements présents en BD,
-    optionnellement filtrés par département.
+    Liste triée des villes/arrondissements présents en BD.
+    Préfère la RPC `get_distinct_villes(dept)` (1 query, ~50ms).
 
-    Pour Paris (75) : Paris 1, Paris 2, …, Paris 20 (ordre numérique).
-    Pour les autres dpt : ordre alphabétique des villes.
+    Cache long (10 min) car la liste change rarement.
     """
     sb = _client()
     villes: set[str] = set()
+
+    # 1) RPC rapide (DISTINCT côté serveur)
+    try:
+        res = sb.rpc("get_distinct_villes", {"dept": departement}).execute()
+        for r in (res.data or []):
+            v = r.get("ville") if isinstance(r, dict) else r
+            if v:
+                villes.add(v)
+        if villes:
+            return sorted(villes, key=_ville_sort_key)
+    except Exception:
+        pass
+
+    # 2) Fallback paginé
     start = 0
     while True:
         q = sb.table("leads").select("ville,departement")
@@ -159,18 +214,34 @@ def fetch_villes(departement: str | None = None) -> list[str]:
     return sorted(villes, key=_ville_sort_key)
 
 
+@st.cache_data(ttl=10, show_spinner=False)
 def fetch_lead(lead_id: int) -> dict[str, Any] | None:
-    """Pas de cache : on veut toujours la version la plus fraîche pour l'édition."""
+    """Cache court (10s) : la fiche est invalidée par invalidate_cache() après update."""
     sb = _client()
     res = sb.table("leads").select("*").eq("id", lead_id).execute()
     return res.data[0] if res.data else None
 
 
-@st.cache_data(ttl=20, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def get_counts() -> dict[str, int]:
-    """Compte les leads par statut. Paginé pour aller au-delà de 1000."""
+    """
+    Compteurs par statut. Préfère la fonction RPC `get_status_counts()`
+    (UNE seule requête, ~150ms). Fallback paginé si la RPC n'existe pas.
+    """
     sb = _client()
     counts = {k: 0 for k in STATUTS}
+    try:
+        res = sb.rpc("get_status_counts").execute()
+        for row in (res.data or []):
+            s = row.get("statut") or "a_contacter"
+            if s in counts:
+                counts[s] = int(row.get("count", 0))
+        counts["total"] = sum(counts.values())
+        return counts
+    except Exception:
+        pass
+
+    # Fallback : on pagine si la RPC n'a pas été déployée
     start = 0
     while True:
         res = sb.table("leads").select("statut").range(start, start + PAGE_SIZE - 1).execute()
@@ -186,9 +257,28 @@ def get_counts() -> dict[str, int]:
     return counts
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=120, show_spinner=False)
 def get_stats() -> dict[str, Any]:
+    """
+    Stats du dashboard. Préfère la fonction RPC `get_dashboard_stats()`
+    (UNE seule requête JSON). Fallback paginé sinon.
+    """
     sb = _client()
+    try:
+        res = sb.rpc("get_dashboard_stats").execute()
+        data = res.data
+        if isinstance(data, dict) and "total" in data:
+            return {
+                "total":     int(data.get("total", 0)),
+                "by_statut": data.get("by_statut") or {},
+                "by_dept":   data.get("by_dept") or {},
+                "by_type":   data.get("by_type") or {},
+                "by_user":   data.get("by_user") or {},
+            }
+    except Exception:
+        pass
+
+    # Fallback : pagination si la RPC n'a pas été déployée
     all_rows: list[dict] = []
     start = 0
     while True:
@@ -219,6 +309,9 @@ def get_stats() -> dict[str, Any]:
 def invalidate_cache() -> None:
     """Vide les caches de lecture après un write. À appeler post-update/import."""
     fetch_leads.clear()
+    fetch_leads_page.clear()
+    get_leads_count.clear()
+    fetch_lead.clear()
     fetch_villes.clear()
     get_counts.clear()
     get_stats.clear()
