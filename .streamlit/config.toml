@@ -8,6 +8,8 @@ font = "sans serif"
 [server]
 headless = true
 port = 8501
+maxUploadSize = 1000          # upload max en MB (1 GB)
+maxMessageSize = 1000         # taille max message WebSocket en MB
 
 [browser]
 gatherUsageStats = false
