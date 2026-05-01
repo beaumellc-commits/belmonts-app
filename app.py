@@ -235,8 +235,107 @@ div[data-testid="stExpander"] {
     display: inline-block; padding: 2px 10px; font-size: 11px;
     border-radius: 12px; font-weight: 500;
 }
+
+/* ─── LOADERS / SPINNERS ─────────────────────────────────────── */
+
+/* Spinner Streamlit redesigné — couleur Belmonts, plus visible */
+[data-testid="stSpinner"] {
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    padding: 2.5rem 1rem !important;
+    margin: 1rem auto !important;
+}
+[data-testid="stSpinner"] > div:first-child {
+    width: 42px !important;
+    height: 42px !important;
+    border-width: 3px !important;
+    border-color: #e8e8e4 !important;
+    border-top-color: #cc2020 !important;
+    animation-duration: 0.7s !important;
+}
+[data-testid="stSpinner"] p {
+    color: #888 !important;
+    font-size: 12px !important;
+    margin-top: 0.9rem !important;
+    letter-spacing: 1.5px !important;
+    text-transform: uppercase !important;
+}
+
+/* Splash de chargement initial / après login (overlay plein écran) */
+.belmonts-splash {
+    position: fixed;
+    inset: 0;
+    background: #f5f5f3;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    z-index: 999999;
+    animation: belmonts-fadein 0.2s ease-out;
+}
+.belmonts-splash-logo {
+    font-size: 28px;
+    font-weight: 500;
+    letter-spacing: 7px;
+    color: #0d1f38;
+}
+.belmonts-splash-logo .belmonts-t { color: #cc2020; }
+.belmonts-splash-bar {
+    width: 160px; height: 2px;
+    background: #e8e8e4;
+    margin-top: 16px;
+    position: relative;
+    overflow: hidden;
+    border-radius: 2px;
+}
+.belmonts-splash-bar::after {
+    content: "";
+    position: absolute;
+    top: 0; left: -45%;
+    width: 45%; height: 100%;
+    background: #cc2020;
+    animation: belmonts-bar 1.1s infinite cubic-bezier(.4, 0, .2, 1);
+}
+.belmonts-splash-tag {
+    margin-top: 14px;
+    font-size: 9px;
+    color: #aaa;
+    letter-spacing: 4px;
+}
+.belmonts-splash-msg {
+    margin-top: 1.8rem;
+    font-size: 12px;
+    color: #888;
+    letter-spacing: 1px;
+}
+@keyframes belmonts-bar {
+    0%   { left: -45%; }
+    100% { left: 100%; }
+}
+@keyframes belmonts-fadein {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
 </style>
 """, unsafe_allow_html=True)
+
+
+def show_splash(message: str = "Chargement…"):
+    """Affiche un overlay plein écran avec le logo Belmonts et une barre de progression.
+    Retourne le placeholder st.empty() qu'on peut .empty() plus tard pour le retirer."""
+    placeholder = st.empty()
+    placeholder.markdown(
+        f"""
+        <div class="belmonts-splash">
+            <div class="belmonts-splash-logo">
+                BELMON<span class="belmonts-t">T</span>S
+            </div>
+            <div class="belmonts-splash-bar"></div>
+            <div class="belmonts-splash-tag">DEPUIS 1978</div>
+            <div class="belmonts-splash-msg">{message}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    return placeholder
 
 
 # ─── COMPOSANTS ───────────────────────────────────────────────────────────────

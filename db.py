@@ -121,7 +121,7 @@ def get_leads_count(
     return res.count or 0
 
 
-@st.cache_data(ttl=30, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner="Chargement des leads…")
 def fetch_leads_page(
     page_num: int = 0,
     page_size: int = 25,
@@ -214,7 +214,7 @@ def fetch_villes(departement: str | None = None) -> list[str]:
     return sorted(villes, key=_ville_sort_key)
 
 
-@st.cache_data(ttl=10, show_spinner=False)
+@st.cache_data(ttl=10, show_spinner="Ouverture de la fiche…")
 def fetch_lead(lead_id: int) -> dict[str, Any] | None:
     """Cache court (10s) : la fiche est invalidée par invalidate_cache() après update."""
     sb = _client()
@@ -257,7 +257,7 @@ def get_counts() -> dict[str, int]:
     return counts
 
 
-@st.cache_data(ttl=120, show_spinner=False)
+@st.cache_data(ttl=120, show_spinner="Calcul des statistiques…")
 def get_stats() -> dict[str, Any]:
     """
     Stats du dashboard. Préfère la fonction RPC `get_dashboard_stats()`
@@ -493,7 +493,7 @@ def fetch_rdvs_for_lead(lead_id: int) -> list[dict[str, Any]]:
     return res.data or []
 
 
-@st.cache_data(ttl=20, show_spinner=False)
+@st.cache_data(ttl=20, show_spinner="Chargement des rendez-vous…")
 def fetch_rdvs(
     assigne_a: str | None = None,
     statut: str | None = None,
