@@ -617,3 +617,231 @@ def delete_rdv_contact(contact_id: int) -> None:
     sb = _client()
     sb.table("rdv_contacts").delete().eq("id", contact_id).execute()
     fetch_contacts_for_rdv.clear()
+
+
+# ─── CLIENTS (portefeuille MBS + Belmonts) ────────────────────────────────────
+def _invalidate_clients_cache() -> None:
+    fetch_clients_page.clear()
+    get_clients_count.clear()
+    fetch_client.clear()
+    get_clients_counts.clear()
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def get_clients_count(
+    company: str | None = None,  # 'mbs', 'belmonts', 'communs', 'autres', or None
+    search: str | None = None,
+) -> int:
+    """Compteur clients selon filtre entreprise — UNE seule requête HEAD."""
+    sb = _client()
+    q = sb.table("clients").select("id", count="exact", head=True)
+    if company == "mbs":
+        q = q.eq("client_mbs", True)
+    elif company == "belmonts":
+        q = q.eq("client_belmonts", True)
+    elif company == "communs":
+        q = q.eq("client_mbs", True).eq("client_belmonts", True)
+    if search and search.strip():
+        q = q.ilike("nom", f"%{search.strip()}%")
+    res = q.execute()
+    return res.count or 0
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def get_clients_counts() -> dict[str, int]:
+    """Compteurs globaux (sidebar / stats)."""
+    sb = _client()
+    try:
+        res = sb.rpc("get_clients_counts").execute()
+        if isinstance(res.data, dict):
+            return {
+                "total":    int(res.data.get("total", 0)),
+                "mbs":      int(res.data.get("mbs", 0)),
+                "belmonts": int(res.data.get("belmonts", 0)),
+                "communs":  int(res.data.get("communs", 0)),
+            }
+    except Exception:
+        pass
+    # Fallback
+    return {
+        "total":    get_clients_count(),
+        "mbs":      get_clients_count(company="mbs"),
+        "belmonts": get_clients_count(company="belmonts"),
+        "communs":  get_clients_count(company="communs"),
+    }
+
+
+@st.cache_data(ttl=30, show_spinner="Chargement des clients…")
+def fetch_clients_page(
+    page_num: int = 0,
+    page_size: int = 25,
+    company: str | None = None,
+    search: str | None = None,
+) -> pd.DataFrame:
+    """Récupère uniquement la page demandée."""
+    sb = _client()
+    q = sb.table("clients").select("*")
+    if company == "mbs":
+        q = q.eq("client_mbs", True)
+    elif company == "belmonts":
+        q = q.eq("client_belmonts", True)
+    elif company == "communs":
+        q = q.eq("client_mbs", True).eq("client_belmonts", True)
+    if search and search.strip():
+        q = q.ilike("nom", f"%{search.strip()}%")
+    start = page_num * page_size
+    end = start + page_size - 1
+    res = q.order("date_modification", desc=True).range(start, end).execute()
+    return pd.DataFrame(res.data or [])
+
+
+@st.cache_data(ttl=10, show_spinner="Ouverture du client…")
+def fetch_client(client_id: int) -> dict[str, Any] | None:
+    sb = _client()
+    res = sb.table("clients").select("*").eq("id", client_id).execute()
+    return res.data[0] if res.data else None
+
+
+def update_client(client_id: int, updates: dict[str, Any]) -> None:
+    sb = _client()
+    forbidden = {"id", "date_ajout", "date_modification"}
+    payload = {k: v for k, v in updates.items() if k not in forbidden}
+    sb.table("clients").update(payload).eq("id", client_id).execute()
+    _invalidate_clients_cache()
+
+
+def delete_client(client_id: int) -> None:
+    sb = _client()
+    sb.table("clients").delete().eq("id", client_id).execute()
+    _invalidate_clients_cache()
+
+
+def import_clients_from_csv(df: pd.DataFrame, company: str) -> tuple[int, int, int]:
+    """
+    Importe un DataFrame de clients depuis le CSV MBS ou Belmonts.
+
+    `company` ∈ {'mbs', 'belmonts'} : marque automatiquement le bon flag.
+    Si un client existe déjà (par SIRET, ou par (nom + ville)) :
+      - On **active** son flag `client_mbs` ou `client_belmonts` (donc il devient
+        automatiquement « commun » s'il est déjà chez l'autre entreprise)
+      - On enrichit les champs vides (téléphone, email, etc.) sans écraser les
+        valeurs existantes
+      - On préserve **notes** et **tags**
+
+    Retourne (nouveaux, mis_a_jour, ignorés).
+    """
+    if company not in {"mbs", "belmonts"}:
+        raise ValueError("company doit être 'mbs' ou 'belmonts'")
+
+    sb = _client()
+    flag_col = f"client_{company}"
+
+    # Mapping des colonnes CSV → BD
+    col_map = {
+        "Code": "code", "Siret": "siret", "Nom": "nom",
+        "Adresse 1": "adresse", "Adresse 2": "adresse2",
+        "CP": "cp", "Ville": "ville",
+        "Tel": "tel", "Tel2/Fax": "tel2",
+        "Mail": "email", "Dirigeant": "dirigeant",
+        "Observations facture": "observations",
+        "Tags": "tags",
+    }
+    df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
+
+    # Charge tous les clients existants (paginé) pour dédup
+    existing_siret: dict[str, dict] = {}
+    existing_nv: dict[tuple[str, str], dict] = {}
+    start = 0
+    while True:
+        res = sb.table("clients").select(
+            "id,siret,nom,ville,client_mbs,client_belmonts,tel,email,adresse"
+        ).range(start, start + PAGE_SIZE - 1).execute()
+        rows = res.data or []
+        for r in rows:
+            sir = (r.get("siret") or "").strip()
+            if sir:
+                existing_siret[sir] = r
+            nom_l = (r.get("nom") or "").strip().lower()
+            ville_l = (r.get("ville") or "").strip().lower()
+            if nom_l:
+                existing_nv[(nom_l, ville_l)] = r
+        if len(rows) < PAGE_SIZE:
+            break
+        start += PAGE_SIZE
+
+    inserts: list[dict] = []
+    updates: list[tuple[int, dict]] = []
+    skip = 0
+    seen_siret: set[str] = set()
+    seen_nv: set[tuple[str, str]] = set()
+
+    for _, row in df.iterrows():
+        nom = _clean_str(row.get("nom"))
+        if not nom:
+            skip += 1
+            continue
+
+        siret = _clean_str(row.get("siret"))
+        ville = _clean_str(row.get("ville"))
+
+        full_payload = {
+            "nom": nom,
+            "siret": siret,
+            "code": _clean_str(row.get("code")),
+            "adresse": _clean_str(row.get("adresse")),
+            "adresse2": _clean_str(row.get("adresse2")),
+            "cp": _clean_str(row.get("cp")),
+            "ville": ville,
+            "tel": _clean_str(row.get("tel")),
+            "tel2": _clean_str(row.get("tel2")),
+            "email": _clean_str(row.get("email")),
+            "dirigeant": _clean_str(row.get("dirigeant")),
+            "observations": _clean_str(row.get("observations")),
+            "tags": _clean_str(row.get("tags")),
+            flag_col: True,
+        }
+
+        # Dédup
+        existing = None
+        nv_key = (nom.lower(), ville.lower())
+        if siret:
+            if siret in seen_siret:
+                skip += 1
+                continue
+            seen_siret.add(siret)
+            existing = existing_siret.get(siret)
+        else:
+            if nv_key in seen_nv:
+                skip += 1
+                continue
+            seen_nv.add(nv_key)
+            existing = existing_nv.get(nv_key)
+
+        if existing:
+            # Update : ACTIVE le flag de l'entreprise actuelle, n'écrase
+            # que les champs vides côté BD pour préserver les saisies.
+            merge: dict[str, Any] = {flag_col: True}
+            for field in ["siret", "code", "adresse", "adresse2", "cp",
+                          "ville", "tel", "tel2", "email", "dirigeant",
+                          "observations", "tags"]:
+                if not (existing.get(field) or "").strip() and full_payload.get(field):
+                    merge[field] = full_payload[field]
+            updates.append((existing["id"], merge))
+        else:
+            inserts.append(full_payload)
+
+    new_count = 0
+    update_count = 0
+
+    BATCH = 500
+    for i in range(0, len(inserts), BATCH):
+        batch = inserts[i:i + BATCH]
+        sb.table("clients").insert(batch).execute()
+        new_count += len(batch)
+
+    for cid, payload in updates:
+        sb.table("clients").update(payload).eq("id", cid).execute()
+        update_count += 1
+
+    _invalidate_clients_cache()
+    return new_count, update_count, skip

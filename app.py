@@ -14,11 +14,13 @@ import streamlit as st
 
 from db import (
     STATUTS, STATUTS_COLOR, STATUTS_RDV, TYPES_RDV,
-    add_rdv_contact, create_rdv, delete_lead, delete_rdv, delete_rdv_contact,
+    add_rdv_contact, create_rdv, delete_client, delete_lead,
+    delete_rdv, delete_rdv_contact, fetch_client, fetch_clients_page,
     fetch_contacts_for_rdv, fetch_lead, fetch_leads_page, fetch_rdvs,
-    fetch_rdvs_for_lead, fetch_villes, get_counts, get_leads_count,
-    get_rdv_upcoming_count, get_stats, import_from_excel,
-    update_lead, update_rdv, update_rdv_contact,
+    fetch_rdvs_for_lead, fetch_villes, get_clients_count, get_clients_counts,
+    get_counts, get_leads_count, get_rdv_upcoming_count, get_stats,
+    import_clients_from_csv, import_from_excel,
+    update_client, update_lead, update_rdv, update_rdv_contact,
 )
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
@@ -477,6 +479,20 @@ def sidebar() -> str:
                      type="primary" if current_page == "rdv" else "secondary"):
             st.session_state["page"] = "rdv"
             st.session_state.pop("selected_lead", None)
+            st.rerun()
+
+        # Badge Clients : nb total dans le portefeuille (MBS + Belmonts dédupliqués)
+        try:
+            n_clients = get_clients_counts().get("total", 0)
+        except Exception:
+            n_clients = 0
+        clients_label = f"Clients  ·  {n_clients}"
+
+        if st.button(clients_label, key="nav_clients",
+                     use_container_width=True,
+                     type="primary" if current_page == "clients" else "secondary"):
+            st.session_state["page"] = "clients"
+            st.session_state.pop("selected_client", None)
             st.rerun()
         if st.button("Statistiques", key="nav_stats",
                      use_container_width=True,
@@ -1323,6 +1339,310 @@ def page_rdv() -> None:
                     st.rerun()
 
 
+# ─── PAGE: CLIENTS (portefeuille MBS + Belmonts) ─────────────────────────────
+def page_clients() -> None:
+    header("Clients", "Portefeuille MBS et Belmonts")
+
+    user = st.session_state.get("user", "")
+
+    counts = get_clients_counts()
+    cs1, cs2, cs3, cs4 = st.columns(4)
+    cs1.metric("Total", counts.get("total", 0))
+    cs2.metric("MBS", counts.get("mbs", 0))
+    cs3.metric("Belmonts", counts.get("belmonts", 0))
+    cs4.metric("Communs", counts.get("communs", 0))
+
+    st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
+
+    # Filtres
+    f1, f2, f3 = st.columns([2, 3, 0.9])
+    with f1:
+        scope_label = st.selectbox(
+            "Entreprise",
+            ["Tous", "MBS", "Belmonts", "Communs (MBS + Belmonts)"],
+            key="cl_scope",
+        )
+        scope_map = {
+            "Tous": None, "MBS": "mbs", "Belmonts": "belmonts",
+            "Communs (MBS + Belmonts)": "communs",
+        }
+        company = scope_map[scope_label]
+    with f2:
+        search = st.text_input("Recherche par nom",
+                               placeholder="ex : Foncia",
+                               key="cl_search")
+    with f3:
+        st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+        if st.button("↻", key="cl_refresh",
+                     help="Actualiser la liste",
+                     use_container_width=True):
+            st.rerun()
+
+    f_search = search if search else None
+    total = get_clients_count(company=company, search=f_search)
+
+    st.markdown(
+        f"<div style='font-size:13px; color:#666; margin: 0.75rem 0 1rem;'>"
+        f"<strong>{total}</strong> client(s) trouvé(s)</div>",
+        unsafe_allow_html=True,
+    )
+
+    if total == 0:
+        st.info("Aucun client avec ces filtres.")
+        return
+
+    # Détail au-dessus si client sélectionné
+    if st.session_state.get("selected_client"):
+        render_client_detail(st.session_state["selected_client"])
+        st.markdown("---")
+
+    # Pagination
+    PAGE_SIZE = 25
+    page_key = f"client_page_{company}"
+    if page_key not in st.session_state:
+        st.session_state[page_key] = 0
+    total_pages = max(1, (total - 1) // PAGE_SIZE + 1)
+    st.session_state[page_key] = min(st.session_state[page_key], total_pages - 1)
+
+    pc1, pc2, pc3 = st.columns([1, 2, 1])
+    with pc1:
+        if st.button("← Précédent", key="cl_prev_top",
+                     disabled=st.session_state[page_key] == 0,
+                     use_container_width=True):
+            st.session_state[page_key] -= 1
+            st.rerun()
+    with pc2:
+        st.markdown(
+            f"<div style='text-align:center; padding-top:8px; color:#666; font-size:13px;'>"
+            f"Page <strong>{st.session_state[page_key] + 1}</strong> / {total_pages}</div>",
+            unsafe_allow_html=True,
+        )
+    with pc3:
+        if st.button("Suivant →", key="cl_next_top",
+                     disabled=st.session_state[page_key] >= total_pages - 1,
+                     use_container_width=True):
+            st.session_state[page_key] += 1
+            st.rerun()
+
+    page_df = fetch_clients_page(
+        page_num=st.session_state[page_key],
+        page_size=PAGE_SIZE,
+        company=company,
+        search=f_search,
+    )
+
+    for _, row in page_df.iterrows():
+        client_id = int(row["id"])
+        with st.container(border=True):
+            c1, c2, c3, c4 = st.columns([3.2, 2.4, 2.4, 1])
+            with c1:
+                st.markdown(f"**{row['nom']}**")
+                ville_str = f"{row.get('cp') or ''} {row.get('ville') or ''}".strip()
+                if ville_str:
+                    st.caption(ville_str)
+                if row.get("dirigeant"):
+                    st.caption(f"Dirigeant : {row['dirigeant']}")
+            with c2:
+                st.markdown(row.get("tel") or "—")
+                if row.get("email"):
+                    st.caption(row["email"])
+            with c3:
+                badges = []
+                is_mbs = bool(row.get("client_mbs"))
+                is_belm = bool(row.get("client_belmonts"))
+                if is_mbs and is_belm:
+                    badges.append(
+                        "<span class='stat-pill' style='background:#10b981;color:#fff;'>"
+                        "★ Commun</span>"
+                    )
+                else:
+                    if is_mbs:
+                        badges.append(
+                            "<span class='stat-pill' "
+                            "style='background:#dbeafe;color:#1e40af;'>MBS</span>"
+                        )
+                    if is_belm:
+                        badges.append(
+                            "<span class='stat-pill' "
+                            "style='background:#fee2e2;color:#991b1b;'>Belmonts</span>"
+                        )
+                st.markdown(" ".join(badges) or "—", unsafe_allow_html=True)
+            with c4:
+                if st.button("Ouvrir →", key=f"cl_open_{client_id}",
+                             use_container_width=True):
+                    st.session_state["selected_client"] = client_id
+                    st.rerun()
+
+    # Pagination en bas
+    if total_pages > 1:
+        st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
+        bp1, bp2, bp3 = st.columns([1, 2, 1])
+        with bp1:
+            if st.button("← Précédent", key="cl_prev_bot",
+                         disabled=st.session_state[page_key] == 0,
+                         use_container_width=True):
+                st.session_state[page_key] -= 1
+                st.rerun()
+        with bp2:
+            st.markdown(
+                f"<div style='text-align:center; padding-top:8px; color:#666; "
+                f"font-size:13px;'>Page <strong>"
+                f"{st.session_state[page_key] + 1}</strong> / {total_pages}</div>",
+                unsafe_allow_html=True,
+            )
+        with bp3:
+            if st.button("Suivant →", key="cl_next_bot",
+                         disabled=st.session_state[page_key] >= total_pages - 1,
+                         use_container_width=True):
+                st.session_state[page_key] += 1
+                st.rerun()
+
+
+def render_client_detail(client_id: int) -> None:
+    client = fetch_client(client_id)
+    if not client:
+        st.error("Client introuvable.")
+        st.session_state.pop("selected_client", None)
+        return
+
+    is_mbs = bool(client.get("client_mbs"))
+    is_belm = bool(client.get("client_belmonts"))
+
+    with st.container(border=True):
+        # Entête
+        c_h1, c_h2 = st.columns([5, 1])
+        with c_h1:
+            st.markdown(f"### {client['nom']}")
+            st.caption(
+                f"{(client.get('cp') or '').strip()} {(client.get('ville') or '').strip()}".strip()
+                or "—"
+            )
+        with c_h2:
+            if st.button("Fermer", key="close_client_detail"):
+                st.session_state.pop("selected_client", None)
+                st.rerun()
+
+        # Badges entreprise (commutateurs)
+        st.markdown("**Entreprise**")
+        bc1, bc2 = st.columns(2)
+        with bc1:
+            new_mbs = st.checkbox("Client MBS", value=is_mbs,
+                                  key=f"cl_mbs_{client_id}")
+        with bc2:
+            new_belm = st.checkbox("Client Belmonts", value=is_belm,
+                                   key=f"cl_belm_{client_id}")
+
+        if new_mbs and new_belm:
+            st.markdown(
+                "<span class='stat-pill' "
+                "style='background:#10b981;color:#fff;'>★ Client commun</span>",
+                unsafe_allow_html=True,
+            )
+
+        # Coordonnées éditables
+        st.markdown("**Coordonnées**")
+        cc1, cc2 = st.columns(2)
+        with cc1:
+            nom_edit = st.text_input("Nom", value=client.get("nom", ""),
+                                     key=f"cl_nom_{client_id}")
+            siret_edit = st.text_input("SIRET", value=client.get("siret", ""),
+                                       key=f"cl_siret_{client_id}")
+            tel_edit = st.text_input("Téléphone",
+                                     value=client.get("tel", ""),
+                                     key=f"cl_tel_{client_id}")
+            tel2_edit = st.text_input("Téléphone alt / Fax",
+                                      value=client.get("tel2", ""),
+                                      key=f"cl_tel2_{client_id}")
+            email_edit = st.text_input("Email",
+                                       value=client.get("email", ""),
+                                       key=f"cl_email_{client_id}")
+            dirigeant_edit = st.text_input("Dirigeant",
+                                           value=client.get("dirigeant", ""),
+                                           key=f"cl_dir_{client_id}")
+        with cc2:
+            adresse_edit = st.text_input("Adresse",
+                                         value=client.get("adresse", ""),
+                                         key=f"cl_adr_{client_id}")
+            adresse2_edit = st.text_input("Complément d'adresse",
+                                          value=client.get("adresse2", ""),
+                                          key=f"cl_adr2_{client_id}")
+            ac1, ac2 = st.columns([1, 2])
+            with ac1:
+                cp_edit = st.text_input("Code postal",
+                                        value=client.get("cp", ""),
+                                        key=f"cl_cp_{client_id}")
+            with ac2:
+                ville_edit = st.text_input("Ville",
+                                           value=client.get("ville", ""),
+                                           key=f"cl_ville_{client_id}")
+            tags_edit = st.text_input("Tags",
+                                      value=client.get("tags", ""),
+                                      key=f"cl_tags_{client_id}")
+            obs_edit = st.text_input("Observations facture",
+                                     value=client.get("observations", ""),
+                                     key=f"cl_obs_{client_id}")
+
+        notes_edit = st.text_area(
+            "Notes internes",
+            value=client.get("notes", ""),
+            placeholder="ex : contact préféré, conditions négociées…",
+            height=100,
+            key=f"cl_notes_{client_id}",
+        )
+
+        full_payload = {
+            "nom": nom_edit, "siret": siret_edit,
+            "tel": tel_edit, "tel2": tel2_edit,
+            "email": email_edit, "dirigeant": dirigeant_edit,
+            "adresse": adresse_edit, "adresse2": adresse2_edit,
+            "cp": cp_edit, "ville": ville_edit,
+            "tags": tags_edit, "observations": obs_edit,
+            "notes": notes_edit,
+            "client_mbs": new_mbs, "client_belmonts": new_belm,
+        }
+
+        # Actions
+        ac1, ac2 = st.columns([1, 5])
+        with ac1:
+            if st.button("Enregistrer", key=f"cl_save_{client_id}",
+                         use_container_width=True):
+                if _safe(update_client, client_id, full_payload,
+                         success="Client enregistré",
+                         error="Modification impossible"):
+                    st.rerun()
+
+        # Suppression avec confirmation à 2 clics
+        st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
+        confirm_key = f"cl_confirm_del_{client_id}"
+        if not st.session_state.get(confirm_key):
+            if st.button("Supprimer ce client", key=f"cl_del_{client_id}",
+                         help="Suppression définitive"):
+                st.session_state[confirm_key] = True
+                st.rerun()
+        else:
+            st.warning(
+                f"Confirmer la suppression de **{client.get('nom')}** ? "
+                "Cette action est irréversible."
+            )
+            ccd1, ccd2 = st.columns(2)
+            with ccd1:
+                if st.button("Confirmer la suppression",
+                             key=f"cl_confirm_btn_{client_id}",
+                             use_container_width=True):
+                    if _safe(delete_client, client_id,
+                             success=f"Client « {client.get('nom')} » supprimé",
+                             error="Suppression impossible"):
+                        st.session_state.pop(confirm_key, None)
+                        st.session_state.pop("selected_client", None)
+                        st.rerun()
+            with ccd2:
+                if st.button("Annuler",
+                             key=f"cl_cancel_btn_{client_id}",
+                             use_container_width=True):
+                    st.session_state.pop(confirm_key, None)
+                    st.rerun()
+
+
 # ─── PAGE: STATISTIQUES ───────────────────────────────────────────────────────
 def page_stats() -> None:
     header("Statistiques", "Vue d'ensemble du pipeline")
@@ -1367,50 +1687,114 @@ def page_stats() -> None:
 
 # ─── PAGE: IMPORT ─────────────────────────────────────────────────────────────
 def page_import() -> None:
-    header("Import de leads", "Réservé à l'administrateur")
+    header("Importer des données", "Réservé à l'administrateur")
 
-    st.markdown("""
+    tab_leads, tab_clients = st.tabs(["Leads (CRM)", "Clients (MBS / Belmonts)"])
+
+    # ── Onglet Leads ──────────────────────────────────────────────────────────
+    with tab_leads:
+        st.markdown("""
 Upload un fichier Excel de leads. Le fichier doit contenir au minimum les
-colonnes **Entreprise**, **Type** (Syndic ou Agence) et **Téléphone**. Les
-colonnes **Email**, **Adresse**, **Ville**, **Département** et **Source** sont
-prises en compte si présentes.
+colonnes **Entreprise**, **Type** (Syndic ou Agence) et **Téléphone**.
 
 **Comportement** :
-- Les nouveaux leads sont ajoutés avec le statut **🆕 À contacter**.
+- Les nouveaux leads sont ajoutés avec le statut **À contacter**.
 - Les leads existants (identifiés par leur téléphone) voient leurs
-  coordonnées mises à jour, mais leur **statut, notes, téléphone alternatif
+  coordonnées mises à jour, mais leur **statut, notes, téléphone alt
   et historique sont préservés**.
 """)
-
-    uploaded = st.file_uploader("Fichier Excel (.xlsx)", type="xlsx")
-    if not uploaded:
-        return
-
-    try:
-        df = pd.read_excel(uploaded, sheet_name=0)
-        # Détection auto : si les fichiers générés par scrape_leads.py ont un
-        # bandeau "BELMONTS" en ligne 1, les vrais en-têtes sont en ligne 2.
-        expected = {"Entreprise", "Nom", "nom", "Téléphone", "telephone"}
-        if not (set(df.columns) & expected):
-            df = pd.read_excel(uploaded, sheet_name=0, header=1)
-    except Exception as e:
-        st.error(f"Lecture impossible : {e}")
-        return
-
-    st.markdown(f"**{len(df)} lignes** détectées dans le premier onglet.")
-    with st.expander("Aperçu (10 premières lignes)"):
-        st.dataframe(df.head(10), use_container_width=True, hide_index=True)
-
-    if st.button("Lancer l'import"):
-        with st.spinner("Import en cours…"):
+        uploaded = st.file_uploader("Fichier Excel (.xlsx)", type="xlsx",
+                                    key="upload_leads")
+        if uploaded:
             try:
-                new, updated, skipped = import_from_excel(df)
-                st.success(
-                    f"Import terminé — **{new}** nouveaux, "
-                    f"**{updated}** mis à jour, **{skipped}** ignorés."
-                )
+                df = pd.read_excel(uploaded, sheet_name=0)
+                expected = {"Entreprise", "Nom", "nom", "Téléphone", "telephone"}
+                if not (set(df.columns) & expected):
+                    df = pd.read_excel(uploaded, sheet_name=0, header=1)
             except Exception as e:
-                st.error(f"Échec de l'import : {e}")
+                st.error(f"Lecture impossible : {e}")
+                return
+
+            st.markdown(f"**{len(df)} lignes** détectées.")
+            with st.expander("Aperçu (10 premières lignes)"):
+                st.dataframe(df.head(10), use_container_width=True, hide_index=True)
+
+            if st.button("Lancer l'import des leads", key="btn_import_leads"):
+                with st.spinner("Import en cours…"):
+                    try:
+                        new, updated, skipped = import_from_excel(df)
+                        st.success(
+                            f"Import terminé — **{new}** nouveaux, "
+                            f"**{updated}** mis à jour, **{skipped}** ignorés."
+                        )
+                    except Exception as e:
+                        st.error(f"Échec de l'import : {e}")
+
+    # ── Onglet Clients ────────────────────────────────────────────────────────
+    with tab_clients:
+        st.markdown("""
+Upload un fichier **CSV** exporté depuis MBS ou Belmonts (format point-virgule,
+encodage Latin-1).
+
+**Comportement intelligent** :
+- Si un client existe déjà (par SIRET ou par nom + ville), son flag d'entreprise
+  est **activé** (donc s'il est déjà chez l'autre, il devient automatiquement
+  « **client commun** »).
+- Les champs vides sont enrichis sans écraser ce qui est déjà saisi.
+- Les **notes internes** et **tags** sont toujours préservés.
+""")
+        company_label = st.radio(
+            "Entreprise concernée par ce fichier",
+            ["MBS", "Belmonts"],
+            horizontal=True,
+            key="import_client_company",
+        )
+        company_value = company_label.lower()
+
+        encoding_choice = st.selectbox(
+            "Encodage du fichier",
+            ["latin-1 (par défaut)", "utf-8", "cp1252", "utf-16"],
+            index=0,
+            key="import_client_encoding",
+        )
+        encoding = encoding_choice.split(" ")[0]
+
+        sep_choice = st.selectbox(
+            "Séparateur",
+            ["; (point-virgule)", ", (virgule)", "tabulation"],
+            index=0,
+            key="import_client_sep",
+        )
+        sep = {"; (point-virgule)": ";", ", (virgule)": ",",
+               "tabulation": "\t"}[sep_choice]
+
+        uploaded_cl = st.file_uploader("Fichier CSV", type="csv",
+                                       key="upload_clients")
+        if not uploaded_cl:
+            return
+
+        try:
+            df_cl = pd.read_csv(uploaded_cl, sep=sep, encoding=encoding,
+                                dtype=str, keep_default_na=False)
+        except Exception as e:
+            st.error(f"Lecture impossible : {e}")
+            return
+
+        st.markdown(f"**{len(df_cl)} lignes** détectées.")
+        with st.expander("Aperçu (10 premières lignes)"):
+            st.dataframe(df_cl.head(10), use_container_width=True, hide_index=True)
+
+        if st.button(f"Lancer l'import des clients {company_label}",
+                     key="btn_import_clients"):
+            with st.spinner("Import en cours…"):
+                try:
+                    new, updated, skipped = import_clients_from_csv(df_cl, company_value)
+                    st.success(
+                        f"Import terminé — **{new}** nouveaux, "
+                        f"**{updated}** mis à jour, **{skipped}** ignorés."
+                    )
+                except Exception as e:
+                    st.error(f"Échec de l'import : {e}")
 
 
 # ─── ENTRY POINT ──────────────────────────────────────────────────────────────
@@ -1427,6 +1811,8 @@ def main() -> None:
         page_leads(page)
     elif page == "rdv":
         page_rdv()
+    elif page == "clients":
+        page_clients()
     elif page == "stats":
         page_stats()
     elif page == "import":
