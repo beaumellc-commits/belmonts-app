@@ -482,11 +482,12 @@ def sidebar() -> str:
             st.rerun()
 
         # Badge Clients : nb total dans le portefeuille (MBS + Belmonts dédupliqués)
+        # Silencieux si la table n'existe pas encore (avant le 1er SQL).
         try:
             n_clients = get_clients_counts().get("total", 0)
+            clients_label = f"Clients  ·  {n_clients}"
         except Exception:
-            n_clients = 0
-        clients_label = f"Clients  ·  {n_clients}"
+            clients_label = "Clients"
 
         if st.button(clients_label, key="nav_clients",
                      use_container_width=True,
@@ -1345,7 +1346,16 @@ def page_clients() -> None:
 
     user = st.session_state.get("user", "")
 
-    counts = get_clients_counts()
+    # Si la table n'existe pas encore, on affiche un message clair plutôt qu'un traceback
+    try:
+        counts = get_clients_counts()
+    except Exception:
+        st.warning(
+            "La table **clients** n'est pas encore créée dans Supabase. "
+            "Lance le SQL `clients_schema.sql` dans Supabase → SQL Editor "
+            "puis rafraîchis cette page."
+        )
+        return
     cs1, cs2, cs3, cs4 = st.columns(4)
     cs1.metric("Total", counts.get("total", 0))
     cs2.metric("MBS", counts.get("mbs", 0))
