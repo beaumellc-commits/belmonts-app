@@ -174,6 +174,20 @@ def update_lead(lead_id: int, updates: dict[str, Any], user: str) -> None:
     invalidate_cache()
 
 
+def _clean_str(v: Any) -> str:
+    """Convertit en chaîne propre. Gère les NaN / None / '<NA>' que pandas
+    peut produire à la lecture d'un Excel."""
+    if v is None:
+        return ""
+    # Test NaN sans importer numpy
+    if isinstance(v, float) and v != v:
+        return ""
+    s = str(v).strip()
+    if s.lower() in {"nan", "none", "null", "<na>", "na"}:
+        return ""
+    return s
+
+
 def import_from_excel(df: pd.DataFrame) -> tuple[int, int, int]:
     """
     Upsert depuis un DataFrame Excel généré par scrape_leads.py.
@@ -203,30 +217,41 @@ def import_from_excel(df: pd.DataFrame) -> tuple[int, int, int]:
     inserts: list[dict] = []
     updates: list[tuple[int, dict]] = []
     skip = 0
+    seen_tels_in_batch: set[str] = set()
 
     for _, row in df.iterrows():
-        nom = str(row.get("nom", "") or "").strip()
+        nom = _clean_str(row.get("nom"))
         if not nom:
             skip += 1
             continue
 
-        tel = str(row.get("telephone", "") or "").strip()
-        type_ = str(row.get("type", "Syndic") or "Syndic").strip()
+        tel = _clean_str(row.get("telephone"))
+        type_ = _clean_str(row.get("type")) or "Syndic"
         if type_ not in {"Syndic", "Agence"}:
             type_ = "Syndic"
 
         payload = {
             "nom": nom, "type": type_, "telephone": tel,
-            "email":       str(row.get("email", "") or "").strip(),
-            "adresse":     str(row.get("adresse", "") or "").strip(),
-            "ville":       str(row.get("ville", "") or "").strip(),
-            "departement": str(row.get("departement", "") or "").strip(),
-            "source":      str(row.get("source", "") or "").strip(),
+            "email":       _clean_str(row.get("email")),
+            "adresse":     _clean_str(row.get("adresse")),
+            "ville":       _clean_str(row.get("ville")),
+            "departement": _clean_str(row.get("departement")),
+            "source":      _clean_str(row.get("source")),
         }
 
-        if tel and tel in existing_tels:
-            updates.append((existing_tels[tel], payload))
+        if tel:
+            # Doublon dans le fichier lui-même → on saute
+            if tel in seen_tels_in_batch:
+                skip += 1
+                continue
+            seen_tels_in_batch.add(tel)
+
+            if tel in existing_tels:
+                updates.append((existing_tels[tel], payload))
+            else:
+                inserts.append(payload)
         else:
+            # Pas de tél → on insert quand même (fallback nom + adresse)
             inserts.append(payload)
 
     new_count = 0
